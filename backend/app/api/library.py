@@ -44,8 +44,8 @@ def info_payload() -> dict:
         "youtube": {"connected": bool(acc and acc["status"] == "valid"), **({k: acc[k] for k in ("name", "handle", "photo", "status")} if acc else {})},
         "profiles": [{"id": p["id"], "name": p["name"], "format": p["format"], "location": p["location_name"],
                       "is_default": p["is_default"]} for p in profiles.list_all()],
-        "locations": [{"id": loc["id"], "name": loc["name"], "online": loc["online"], "free_bytes": loc["free_bytes"]}
-                      for loc in locations.list_all()],
+        "locations": [{"id": loc["id"], "name": loc["name"], "online": loc["online"], "free_bytes": loc["free_bytes"],
+                       "scans": loc["scan_kind"] != "none"} for loc in locations.list_all()],
     }
 
 
