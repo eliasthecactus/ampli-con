@@ -65,7 +65,7 @@
 			<ChevronRight size={15} class="chev" />
 			{#if j.thumbnail}<img src={j.thumbnail} alt="" />{:else}<span class="icon-ph">{#if j.kind === 'album'}<Disc3 size={18} />{:else if j.kind === 'playlist'}<ListMusic size={18} />{:else}<Music size={18} />{/if}</span>{/if}
 			<div class="grow col ellipsis">
-				<span class="ellipsis"><b>{j.title}</b>{#if j.subtitle}<span class="muted"> · {j.subtitle}</span>{/if}</span>
+				<span class="ellipsis"><b>{j.title}</b>{#if j.subtitle}<span class="muted">{' · '}{j.subtitle}</span>{/if}</span>
 				<span class="small faint ellipsis">
 					{j.kind} · {j.profile_name} → {j.location_name} · {j.requested_by ?? ''} · {ago(j.finished_at ?? j.created_at)}
 				</span>
@@ -93,7 +93,7 @@
 					<div class="item">
 						<span class="small faint n">{it.position}</span>
 						<div class="grow col ellipsis">
-							<span class="ellipsis">{it.title} <span class="muted">· {it.artist ?? ''}</span></span>
+							<span class="ellipsis">{it.title}{#if it.artist}<span class="muted">{' · '}{it.artist}</span>{/if}</span>
 							{#if it.file_path}<code class="small faint ellipsis">{it.file_path}</code>{/if}
 							{#if it.error}<span class="small err">{it.error}</span>{/if}
 						</div>

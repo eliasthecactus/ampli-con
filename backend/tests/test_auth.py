@@ -111,3 +111,13 @@ def test_signed_links(client, app_token):
     old = int(time.time()) - 1
     assert client.get(f"{path}?d={app_token['device_id']}&exp={old}&sig={auth.sign(app_token['secret'], path, old)}").status_code == 401
     (config.STREAM_CACHE_DIR / "aaaaaaaaaaa.m4a").unlink()
+
+
+def test_signing_in_again_replaces_the_device(client):
+    from app import db
+    body = {"username": "admin", "password": "correct-horse", "device": "Ampli on iPhone", "install_id": "abc"}
+    first = client.post("/api/app/login", json=body).json()
+    second = client.post("/api/app/login", json=body).json()
+    assert db.scalar("SELECT COUNT(*) FROM devices WHERE install_id = 'abc'") == 1
+    assert client.get("/api/app/info", headers={"Authorization": f"Bearer {first['token']}"}).status_code == 401
+    assert client.get("/api/app/info", headers={"Authorization": f"Bearer {second['token']}"}).status_code == 200

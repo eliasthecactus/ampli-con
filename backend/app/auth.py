@@ -151,12 +151,17 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def create_device(name: str, ip: str | None) -> dict:
-    """A signed-in app. The token authenticates requests, the secret signs stream links (never sent in URLs)."""
+def create_device(name: str, ip: str | None, install_id: str | None = None) -> dict:
+    """A signed-in app. The token authenticates requests, the secret signs stream links (never sent in URLs).
+    An app that signs in again (same install id) replaces its old entry."""
     token = secrets.token_urlsafe(32)
     secret = secrets.token_urlsafe(32)
+    install_id = (install_id or "").strip()[:100] or None
+    if install_id:
+        db.execute("DELETE FROM devices WHERE install_id = ?", [install_id])
     did = db.insert("devices", {"name": (name or "Ampli").strip()[:80], "token_hash": _token_hash(token),
-                                "secret": secret, "created_at": db.now(), "last_seen": db.now(), "last_ip": ip})
+                                "secret": secret, "created_at": db.now(), "last_seen": db.now(), "last_ip": ip,
+                                "install_id": install_id})
     return {"id": did, "token": token, "secret": secret}
 
 

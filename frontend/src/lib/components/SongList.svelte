@@ -17,8 +17,7 @@
 			<div class="grow col ellipsis">
 				<span class="ellipsis">{s.title}{#if s.is_video}<span class="pill">Video</span>{/if}</span>
 				<span class="small muted ellipsis">
-					{#if s.artist_id}<a href="/artist/{s.artist_id}">{s.artist}</a>{:else}{s.artist}{/if}{#if s.album && !numbered}
-						· {#if s.album_id}<a href="/album/{s.album_id}">{s.album}</a>{:else}{s.album}{/if}{/if}
+					{#if s.artist_id}<a href="/artist/{s.artist_id}">{s.artist}</a>{:else}{s.artist}{/if}{#if s.album && !numbered}{' · '}{#if s.album_id}<a href="/album/{s.album_id}">{s.album}</a>{:else}{s.album}{/if}{/if}
 				</span>
 			</div>
 			<span class="small faint dur">{duration(s.duration)}</span>

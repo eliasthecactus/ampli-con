@@ -118,6 +118,11 @@ MIGRATIONS: list[str] = [
     CREATE INDEX job_items_job ON job_items(job_id, position);
     CREATE INDEX job_items_status ON job_items(status);
     """,
+    # 2: one entry per app install (signing in again replaces it)
+    """
+    ALTER TABLE devices ADD COLUMN install_id TEXT;
+    CREATE INDEX devices_install ON devices(install_id);
+    """,
 ]
 
 

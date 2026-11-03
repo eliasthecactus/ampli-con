@@ -20,12 +20,13 @@ class Login(BaseModel):
     username: str
     password: str
     device: str = "Ampli"
+    install_id: str | None = None
 
 
 @router.post("/app/login")
 def app_login(body: Login, request: Request):
     auth.check_login(body.username, body.password, auth.client_ip(request))
-    d = auth.create_device(body.device, auth.client_ip(request))
+    d = auth.create_device(body.device, auth.client_ip(request), body.install_id)
     return {"token": d["token"], "secret": d["secret"], "device_id": d["id"], **info_payload()}
 
 
