@@ -123,6 +123,10 @@ MIGRATIONS: list[str] = [
     ALTER TABLE devices ADD COLUMN install_id TEXT;
     CREATE INDEX devices_install ON devices(install_id);
     """,
+    # 3: a download can go to another location than its profile's
+    """
+    ALTER TABLE jobs ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL;
+    """,
 ]
 
 

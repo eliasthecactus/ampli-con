@@ -15,18 +15,23 @@
 
 	let open = $state(false);
 	let profiles = $state<any[]>([]);
+	let locations = $state<any[]>([]);
 	let busy = $state(false);
 	let sent = $state(false);
 
 	async function loadProfiles() {
-		if (!profiles.length) profiles = (await get('/app/info')).profiles;
+		if (!profiles.length) {
+			const info = await get('/app/info');
+			profiles = info.profiles;
+			locations = info.locations;
+		}
 	}
-	async function start(profileId?: number) {
+	async function start(profileId?: number, locationId?: number) {
 		open = false;
 		busy = true;
 		try {
-			const j = await post('/downloads', { kind, id, title, subtitle, thumbnail, profile_id: profileId ?? null });
-			toast(`${j.title} is in the download queue (${j.profile_name})`, 'ok');
+			const j = await post('/downloads', { kind, id, title, subtitle, thumbnail, profile_id: profileId ?? null, location_id: locationId ?? null });
+			toast(`${j.title} is in the download queue (${j.profile_name} → ${j.location_name})`, 'ok');
 			sent = true;
 		} catch (e) {
 			errorToast(e);
@@ -61,6 +66,15 @@
 					<span class="small faint">{p.format} · {p.location}</span>
 				</button>
 			{/each}
+			{#if locations.length > 1}
+				<div class="small faint pad sep">Default profile, saved to</div>
+				{#each locations as l (l.id)}
+					<button class="ghost item" onclick={() => start(undefined, l.id)} disabled={!l.online}>
+						<span class="grow ellipsis">{l.name}</span>
+						{#if !l.online}<span class="small faint">not mounted</span>{/if}
+					</button>
+				{/each}
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -100,6 +114,10 @@
 	}
 	.pad {
 		padding: 6px 8px;
+	}
+	.sep {
+		border-top: 1px solid var(--line);
+		margin-top: 4px;
 	}
 	.item {
 		width: 100%;

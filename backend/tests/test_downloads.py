@@ -118,6 +118,18 @@ def test_failures_cancel_and_retry(client, h):
     assert client.delete("/api/jobs", headers=h).json()["removed"] >= 1
 
 
+def test_download_to_another_location(client, web, h):
+    clean_downloads()
+    other = web.post("/api/locations", json={"name": "Second", "path": str(config.DOWNLOADS_DIR / "second")}).json()
+    j = wait_for(client, client.post("/api/downloads", json={"kind": "song", "id": "ttttttttt02", "location_id": other["id"]},
+                                     headers=h).json()["id"], h)
+    assert j["status"] == "done" and j["location_name"] == "Second"
+    assert (config.DOWNLOADS_DIR / "second" / j["items"][0]["file_path"]).exists()
+    assert client.post("/api/downloads", json={"kind": "song", "id": "ttttttttt02", "location_id": 999}, headers=h).status_code == 400
+    client.delete("/api/jobs", headers=h)
+    web.delete(f"/api/locations/{other['id']}")
+
+
 def test_profiles_and_locations_admin(web):
     locs = web.get("/api/locations").json()
     assert locs[0]["name"] == "Downloads" and locs[0]["online"]

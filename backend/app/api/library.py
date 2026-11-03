@@ -44,7 +44,7 @@ def info_payload() -> dict:
         "version": config.VERSION,
         "youtube": {"connected": bool(acc and acc["status"] == "valid"), **({k: acc[k] for k in ("name", "handle", "photo", "status")} if acc else {})},
         "profiles": [{"id": p["id"], "name": p["name"], "format": p["format"], "location": p["location_name"],
-                      "is_default": p["is_default"]} for p in profiles.list_all()],
+                      "location_id": p["location_id"], "is_default": p["is_default"]} for p in profiles.list_all()],
         "locations": [{"id": loc["id"], "name": loc["name"], "online": loc["online"], "free_bytes": loc["free_bytes"],
                        "scans": loc["scan_kind"] != "none"} for loc in locations.list_all()],
     }
@@ -188,6 +188,7 @@ class DownloadRequest(BaseModel):
     kind: str
     id: str
     profile_id: int | None = None
+    location_id: int | None = None
     title: str | None = None
     subtitle: str | None = None
     thumbnail: str | None = None
@@ -197,7 +198,7 @@ class DownloadRequest(BaseModel):
 async def download(body: DownloadRequest, who: dict = Depends(auth.require_client)):
     try:
         return await downloads.manager.enqueue(body.kind, body.id, body.profile_id, who["name"],
-                                               body.title, body.subtitle, body.thumbnail)
+                                               body.title, body.subtitle, body.thumbnail, body.location_id)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 

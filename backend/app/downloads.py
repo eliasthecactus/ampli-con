@@ -97,7 +97,8 @@ class Manager:
     # -------------------------------------------------------- requests
 
     async def enqueue(self, kind: str, source_id: str, profile_id: int | None, requested_by: str,
-                      title: str | None = None, subtitle: str | None = None, thumbnail: str | None = None) -> dict:
+                      title: str | None = None, subtitle: str | None = None, thumbnail: str | None = None,
+                      location_id: int | None = None) -> dict:
         if kind not in KINDS:
             raise ValueError("Unknown download kind")
         source_id = source_id.strip()
@@ -107,20 +108,20 @@ class Manager:
         profile = profiles.get(profile_id)
         if not profile:
             raise ValueError("There's no download profile yet. Create one in Amplicon's web interface.")
-        loc = locations.get(profile["location_id"])
+        loc = locations.get(location_id or profile["location_id"])
         if not loc:
-            raise ValueError(f"The profile {profile['name']} has no location")
+            raise ValueError("That location doesn't exist" if location_id else f"The profile {profile['name']} has no location")
         if not Path(loc["path"]).is_dir():
             raise ValueError(f"The location {loc['name']} ({loc['path']}) isn't there. Is the volume mounted?")
         # The same thing asked for twice while the first is still going: hand back the running job.
-        dup = db.row(f"SELECT * FROM jobs WHERE kind = ? AND source_id = ? AND profile_id = ? AND status IN "
-                     f"({','.join('?' * len(ACTIVE))})", [kind, source_id, profile["id"], *ACTIVE])
+        dup = db.row(f"SELECT * FROM jobs WHERE kind = ? AND source_id = ? AND profile_id = ? AND location_id = ? AND status IN "
+                     f"({','.join('?' * len(ACTIVE))})", [kind, source_id, profile["id"], loc["id"], *ACTIVE])
         if dup:
             return job_public(dup)
         job_id = db.insert("jobs", {
             "kind": kind, "source_id": source_id, "title": title or source_id, "subtitle": subtitle,
             "thumbnail": thumbnail, "profile_id": profile["id"], "profile_name": profile["name"],
-            "location_name": loc["name"], "status": "preparing", "requested_by": requested_by,
+            "location_id": loc["id"], "location_name": loc["name"], "status": "preparing", "requested_by": requested_by,
             "created_at": db.now(),
         })
         self.preparing[job_id] = asyncio.create_task(self._prepare(job_id))
@@ -284,7 +285,7 @@ class Manager:
     async def _after_job(self, job_id: int) -> None:
         j = get_job(job_id)
         profile = db.row("SELECT * FROM profiles WHERE id = ?", [j["profile_id"]]) if j else None
-        loc = locations.get(profile["location_id"]) if profile else None
+        loc = locations.get(j["location_id"] or (profile and profile["location_id"])) if j else None
         if not j or not loc:
             return
         try:
@@ -312,7 +313,7 @@ class Manager:
     async def _download(self, item: dict) -> tuple[str, str | None, str | None]:
         j = get_job(item["job_id"])
         profile = db.row("SELECT * FROM profiles WHERE id = ?", [j["profile_id"]]) or profiles.get(None)
-        loc = locations.get(profile["location_id"]) if profile else None
+        loc = locations.get(j["location_id"] or (profile and profile["location_id"]))
         if not profile or not loc:
             return "failed", None, "The profile or its location was deleted"
         root = Path(loc["path"])
