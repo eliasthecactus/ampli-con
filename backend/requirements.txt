@@ -1,0 +1,8 @@
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+argon2-cffi==25.1.0
+cryptography==50.0.2
+httpx==0.28.1
+mutagen==1.48.1
+pillow==13.0.0
+ytmusicapi==1.12.3

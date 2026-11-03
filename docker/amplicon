@@ -1,0 +1,8 @@
+#!/bin/sh
+# Maintenance commands, e.g.:  docker exec -it amplicon amplicon reset-password
+# Runs as the app user, so the database keeps its owner.
+cd /app
+if [ "$(id -u)" = "0" ]; then
+  exec setpriv --reuid="${PUID:-1000}" --regid="${PGID:-1000}" --init-groups env HOME="$CONFIG_DIR" python -m app.cli "$@"
+fi
+exec python -m app.cli "$@"

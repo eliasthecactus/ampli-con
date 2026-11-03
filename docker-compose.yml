@@ -1,0 +1,20 @@
+services:
+  amplicon:
+    image: ghcr.io/eliasthecactus/ampli-con:latest
+    container_name: amplicon
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      # Optional: the web user. Without these, Amplicon creates "admin" with a random password on the first
+      # start and prints it to the log (docker logs amplicon).
+      # - AMPLICON_USERNAME=admin
+      # - AMPLICON_PASSWORD=change-me-please
+    volumes:
+      - ./container/amplicon/config:/config
+      - ./container/amplicon/downloads:/downloads
+      # More download locations: mount them, then add them under Locations in the web interface.
+      # - /mnt/hdd/music:/music
