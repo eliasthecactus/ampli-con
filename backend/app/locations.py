@@ -53,6 +53,7 @@ def browse(path: str | None) -> dict:
 def public(r: dict) -> dict:
     out = {k: v for k, v in r.items() if k != "scan_secret_enc"}
     out["has_scan_secret"] = bool(r.get("scan_secret_enc"))
+    out["rename_all"] = bool(r.get("rename_all"))
     p = Path(r["path"])
     out["online"] = p.is_dir()
     out["writable"] = p.is_dir() and os.access(p, os.W_OK)
@@ -90,7 +91,8 @@ def save(data: dict, location_id: int | None = None) -> dict:
         raise ValueError("Unknown library type")
     fields = {"name": name, "path": str(p), "scan_kind": kind,
               "scan_url": (data.get("scan_url") or "").strip().rstrip("/") or None,
-              "scan_user": (data.get("scan_user") or "").strip() or None}
+              "scan_user": (data.get("scan_user") or "").strip() or None,
+              "rename_all": int(bool(data.get("rename_all")))}
     if kind != "none" and not fields["scan_url"]:
         raise ValueError("The library scan needs the server's address")
     if data.get("scan_secret"):

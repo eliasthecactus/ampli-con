@@ -15,8 +15,15 @@ download locations, download profiles and a live view of the queue.
   interface. Amplicon resolves the audio with yt-dlp and passes it through to the player, with seeking and an
   on-disk cache, so a song played twice comes from the disk.
 - **Download.** One song, a whole album or a whole playlist, with live progress in the app and in the web
-  interface. Files get proper tags from YouTube Music (title, artists, album, album artist, track number,
-  year), a square cover and, if you want, lyrics.
+  interface. Files get proper tags (title, artists, album, album artist, numbers, year, genre, label, ISRC), a square
+  cover and, if you want, lyrics.
+- **Review before downloading** (optional): Amplicon looks songs up on Deezer, shows what it found and lets you pick
+  another match, change every field or upload a cover. The download starts when you confirm.
+- **Library**: every file in your locations in one list, with filters, sorting, a tag editor, bulk tools, a duplicate
+  check and an AI tag helper through OpenRouter (bring your own key; you see every suggestion before it's written).
+- **File names that stay in line**: `{artist} - {title}` by default, set per profile. Tag changes rename the file, and
+  changing a rule offers to rename what's already there. Files Amplicon didn't download are left alone unless the
+  location says otherwise.
 - **Download profiles**, like the quality profiles of Sonarr and Radarr: format (M4A or Opus as YouTube has
   it, or MP3), target location, file name templates for album songs, singles and playlists, an M3U file for
   playlists, SponsorBlock, what to do with files that are already there. Pick one when you download, or let
@@ -95,7 +102,7 @@ sign-in. Settings has a switch to always use it.
 ### Download profiles and locations
 
 On the first start, `/downloads` becomes the location "Downloads" and a profile "Standard" (M4A, files named
-like `Artist/Album (Year)/01 Title.m4a`) is created. Add more locations under **Locations** (any folder inside
+like `Artist - Title.m4a`) is created. Add more locations under **Locations** (any folder inside
 a mounted volume) and more profiles under **Profiles**.
 
 File name templates use these fields:
@@ -109,11 +116,28 @@ File name templates use these fields:
 | `{track}`, `{track:02}` | 1, 01 |
 | `{disc}` | 1 |
 | `{year}` | 2001 |
+| `{genre}` | Electro |
+| `{label}` | Daft Life |
 | `{playlist}` | Road Trip |
 | `{position}`, `{position:03}` | 7, 007 |
 | `{video_id}` | FGBhQbmPwH8 |
 
 `/` makes folders. Text in `[ ]` disappears when a field inside is empty, e.g. `{album}[ ({year})]`.
+
+When you change a template, Amplicon shows how many files would move and renames them when you confirm. Tag changes in
+the library rename the file right away (Settings can turn that off). Files without a title or an artist keep their
+name, a name that's already taken is reported instead of overwritten, and M3U playlists follow along. Files Amplicon
+didn't download are only renamed in a location with "Apply file name rules to every file here".
+
+### Metadata and the AI tag helper
+
+Turn on **Settings › Review the metadata before every download** to check songs before they're saved. Look-ups use
+Deezer's public API (no account needed) and, if you want, large covers from Apple. If a source is down, you still get
+the review with YouTube Music's data.
+
+For the AI helper, add an [OpenRouter](https://openrouter.ai/keys) key in Settings. The model and the default
+instruction can be changed there. File names and tags of the songs you select are sent to OpenRouter, and nothing is
+written until you apply the suggestions.
 
 ## In Ampli
 

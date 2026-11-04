@@ -2,7 +2,7 @@
 	import { X, RotateCcw, Trash2, ChevronRight, Disc3, ListMusic, Music } from '@lucide/svelte';
 	import { del, get, post } from '#lib/api.ts';
 	import { ago } from '#lib/format.ts';
-	import { ACTIVE, errorToast, live, on, type Job } from '#lib/state.svelte.ts';
+	import { ACTIVE, errorToast, live, on, reviews, type Job } from '#lib/state.svelte.ts';
 
 	let history = $state<Job[]>([]);
 	let openId = $state<number | null>(null);
@@ -49,6 +49,7 @@
 	}
 	const STATUS: Record<string, [string, string]> = {
 		preparing: ['Reading from YouTube', 'info'],
+		review: ['Needs review', 'warn'],
 		queued: ['Waiting', 'muted'],
 		running: ['Downloading', 'info'],
 		done: ['Done', 'ok'],
@@ -60,7 +61,7 @@
 </script>
 
 {#snippet jobRow(j: Job)}
-	<div class="job" class:open={openId === j.id}>
+	<div class="job" class:open={openId === j.id} class:reviewing={j.status === 'review'}>
 		<button class="ghost head" onclick={() => toggle(j.id)}>
 			<ChevronRight size={15} class="chev" />
 			{#if j.thumbnail}<img src={j.thumbnail} alt="" />{:else}<span class="icon-ph">{#if j.kind === 'album'}<Disc3 size={18} />{:else if j.kind === 'playlist'}<ListMusic size={18} />{:else}<Music size={18} />{/if}</span>{/if}
@@ -80,6 +81,7 @@
 			<span class="pill {STATUS[j.status]?.[1]}">{STATUS[j.status]?.[0] ?? j.status}</span>
 		</button>
 		<div class="actions">
+			{#if j.status === 'review'}<button class="sm primary" onclick={() => (reviews.job = j.id)}>Review</button>{/if}
 			{#if ACTIVE.has(j.status)}
 				<button class="ghost icon sm" title="Cancel" onclick={() => act(() => post(`/jobs/${j.id}/cancel`))}><X size={15} /></button>
 			{:else}
@@ -225,5 +227,8 @@
 		.items {
 			padding-left: 10px;
 		}
+	}
+	.reviewing .head {
+		padding-right: 124px;
 	}
 </style>

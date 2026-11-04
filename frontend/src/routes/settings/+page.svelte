@@ -10,6 +10,7 @@
 	let system = $state<any>(null);
 	let pw = $state({ current: '', username: session.user?.username ?? '', next: '' });
 	let busy = $state(false);
+	let newKey = $state('');
 
 	async function load() {
 		try {
@@ -26,14 +27,22 @@
 	async function save() {
 		busy = true;
 		try {
-			const r = await put('/settings', s);
+			const r = await put('/settings', newKey ? { ...s, openrouter_key: newKey } : s);
 			s = r.settings;
 			cache = r.cache;
+			newKey = '';
 			toast('Settings saved', 'ok');
 		} catch (e) {
 			errorToast(e);
 		} finally {
 			busy = false;
+		}
+	}
+	async function removeKey() {
+		try {
+			s = (await put('/settings', { openrouter_key: '' })).settings;
+		} catch (e) {
+			errorToast(e);
 		}
 	}
 	async function changePassword() {
@@ -82,6 +91,26 @@
 		</div>
 		<label class="check"><input type="checkbox" bind:checked={s.stream_with_account} /> Always use the YouTube account for playing and downloading</label>
 		<p class="hint">Off: Amplicon plays without the account and only uses it when YouTube asks for a sign-in. That keeps the account out of most requests.</p>
+
+		<h2>Metadata</h2>
+		<label class="check"><input type="checkbox" bind:checked={s.metadata_review} /> Review the metadata before every download</label>
+		<p class="hint">Amplicon looks the songs up and shows what it found. You can pick another match or change everything by hand, and the download starts when you confirm.</p>
+		<label class="check"><input type="checkbox" bind:checked={s.metadata_deezer} /> Look songs up on Deezer (genre, label, ISRC, disc numbers, 1000 px covers; no account needed)</label>
+		<label class="check"><input type="checkbox" bind:checked={s.metadata_itunes_covers} /> Also offer large covers from Apple (slower: about 20 look-ups a minute)</label>
+		<label class="check"><input type="checkbox" bind:checked={s.enforce_file_names} /> Rename files after tag changes, so they follow the profile's file names</label>
+
+		<h2>AI tag helper (OpenRouter)</h2>
+		<label class="field">API key
+			{#if s.openrouter_key_set && !newKey}
+				<div class="row"><input type="text" value="Saved" disabled /><button class="sm danger" onclick={removeKey}>Remove</button></div>
+			{/if}
+			<input type="password" bind:value={newKey} autocomplete="off" placeholder={s.openrouter_key_set ? 'Replace the saved key' : 'sk-or-…'} />
+			<span class="hint">Create one at openrouter.ai/keys. It's stored encrypted and never shown again.</span>
+		</label>
+		<label class="field">Model<input type="text" class="mono" bind:value={s.openrouter_model} /></label>
+		<label class="field">Default instruction<textarea rows="5" bind:value={s.ai_instruction}></textarea></label>
+		<label class="field">Songs per AI request<input type="number" min="1" max="100" bind:value={s.ai_batch_size} /></label>
+		<p class="hint">File names and tags of the selected songs go to OpenRouter. Suggestions are shown first; nothing changes until you apply them.</p>
 
 		<h2>yt-dlp</h2>
 		<div class="row small">

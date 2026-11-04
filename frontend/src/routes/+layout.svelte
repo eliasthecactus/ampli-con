@@ -2,10 +2,11 @@
 	import '../app.css';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { Search, Download, SlidersHorizontal, HardDrive, CirclePlay, Settings, LogOut, Menu, Sun, Moon, Monitor, Play, Pause, X } from '@lucide/svelte';
+	import { Search, Download, Library, SlidersHorizontal, HardDrive, CirclePlay, Settings, LogOut, Menu, Sun, Moon, Monitor, Play, Pause, X } from '@lucide/svelte';
 	import { get, post, setUnauthorizedHandler } from '#lib/api.ts';
 	import { session, live, player, connectEvents, disconnectEvents } from '#lib/state.svelte.ts';
 	import Toasts from '#lib/components/Toasts.svelte';
+	import MetadataReview from '#lib/components/MetadataReview.svelte';
 
 	let { children } = $props();
 	let navOpen = $state(false);
@@ -15,6 +16,7 @@
 	const NAV = [
 		{ href: '/', label: 'Search', icon: Search },
 		{ href: '/downloads', label: 'Downloads', icon: Download },
+		{ href: '/library', label: 'Library', icon: Library },
 		{ href: '/profiles', label: 'Profiles', icon: SlidersHorizontal },
 		{ href: '/locations', label: 'Locations', icon: HardDrive },
 		{ href: '/youtube', label: 'YouTube', icon: CirclePlay },
@@ -75,7 +77,7 @@
 
 	$effect(() => {
 		if (player.song && audio) {
-			audio.src = `/api/stream/${player.song.id}`;
+			audio.src = player.song.src ?? `/api/stream/${player.song.id}`;
 			audio.play().catch(() => {});
 		}
 	});
@@ -132,6 +134,7 @@
 			<div class="content">{@render children()}</div>
 		</main>
 	</div>
+	<MetadataReview />
 	{#if player.song}
 		<div class="playerbar">
 			{#if player.song.thumbnail}<img src={player.song.thumbnail} alt="" />{/if}

@@ -3,6 +3,7 @@
 	import { del, get, post, put } from '#lib/api.ts';
 	import { errorToast, toast } from '#lib/state.svelte.ts';
 	import Modal from '#lib/components/Modal.svelte';
+	import RenameDialog from '#lib/components/RenameDialog.svelte';
 
 	let all = $state<any[]>([]);
 	let locations = $state<any[]>([]);
@@ -11,6 +12,7 @@
 	let form = $state<any>({});
 	let preview = $state<any>({});
 	let busy = $state(false);
+	let rename = $state<any>(null);
 
 	async function loadAll() {
 		try {
@@ -55,11 +57,11 @@
 	async function save() {
 		busy = true;
 		try {
-			if (form.id) await put(`/profiles/${form.id}`, form);
-			else await post('/profiles', form);
+			const saved = form.id ? await put(`/profiles/${form.id}`, form) : await post('/profiles', form);
 			toast('Profile saved', 'ok');
 			open = false;
 			loadAll();
+			if (saved?.rename?.count) rename = saved.rename;
 		} catch (e) {
 			errorToast(e);
 		} finally {
@@ -121,6 +123,8 @@
 	{/each}
 </div>
 
+<RenameDialog bind:plan={rename} />
+
 <Modal bind:open title={form.id ? `Edit ${form.name}` : 'New profile'} width="640px">
 	<div class="form">
 		<label class="field">Name<input type="text" bind:value={form.name} placeholder="e.g. Lossy for the car" /></label>
@@ -149,7 +153,8 @@
 		<div class="section-title">File names</div>
 		<p class="hint">
 			Fields: {(options?.fields ?? []).map((f: string) => `{${f}}`).join(' ')}. <code>{'{track:02}'}</code> pads with zeros,
-			<code>[ … ]</code> disappears when a field inside is empty, <code>/</code> makes folders.
+			<code>[ … ]</code> disappears when a field inside is empty, <code>/</code> makes folders. The extension is added for you.
+			When you change a rule, Amplicon offers to rename the existing files; after that they stay in line.
 		</p>
 		<label class="field">Album songs<input type="text" class="mono" bind:value={form.album_template} oninput={refreshPreview} /></label>
 		<code class="pv">{preview.album_template}</code>

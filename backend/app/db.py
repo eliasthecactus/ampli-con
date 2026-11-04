@@ -127,6 +127,56 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE jobs ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL;
     """,
+    # 4: metadata review before a download, the file library, file names that follow the rules
+    """
+    ALTER TABLE jobs ADD COLUMN review INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE locations ADD COLUMN rename_all INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE library_files (
+        id INTEGER PRIMARY KEY,
+        location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        target_path TEXT,
+        size INTEGER NOT NULL DEFAULT 0,
+        mtime REAL NOT NULL DEFAULT 0,
+        format TEXT,
+        duration REAL,
+        bitrate INTEGER,
+        title TEXT,
+        artist TEXT,
+        albumartist TEXT,
+        album TEXT,
+        track INTEGER,
+        track_total INTEGER,
+        disc INTEGER,
+        disc_total INTEGER,
+        year TEXT,
+        genre TEXT,
+        label TEXT,
+        isrc TEXT,
+        video_id TEXT,
+        has_cover INTEGER NOT NULL DEFAULT 0,
+        has_lyrics INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL,
+        playlist TEXT,
+        position INTEGER,
+        added_at REAL NOT NULL,
+        scanned_at REAL NOT NULL,
+        UNIQUE (location_id, path)
+    );
+    CREATE INDEX library_artist ON library_files(artist COLLATE NOCASE);
+    CREATE INDEX library_album ON library_files(album COLLATE NOCASE);
+    CREATE INDEX library_video ON library_files(video_id);
+    CREATE TABLE duplicate_ignores (
+        key TEXT PRIMARY KEY,
+        created_at REAL NOT NULL
+    );
+    UPDATE profiles SET album_template = '{artist} - {title}'
+        WHERE album_template = '{albumartist}/{album}[ ({year})]/[{disc}-]{track:02} {title}';
+    UPDATE profiles SET single_template = '{artist} - {title}' WHERE single_template = '{artist}/{album}/{title}';
+    UPDATE profiles SET playlist_template = 'Playlists/{playlist}/{artist} - {title}'
+        WHERE playlist_template = 'Playlists/{playlist}/{position:03} {artist} - {title}';
+    """,
 ]
 
 

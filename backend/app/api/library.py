@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import auth, config, downloads, locations, profiles, settings_store, stream, youtube
+from .. import ai, auth, config, db, downloads, locations, metadata, profiles, settings_store, stream, youtube
 from ..events import bus
 
 router = APIRouter(prefix="/api")
@@ -42,6 +42,8 @@ def info_payload() -> dict:
     return {
         "name": settings_store.get("server_name"),
         "version": config.VERSION,
+        "metadata_review": bool(settings_store.get("metadata_review")),
+        "ai_available": ai.available(),
         "youtube": {"connected": bool(acc and acc["status"] == "valid"), **({k: acc[k] for k in ("name", "handle", "photo", "status")} if acc else {})},
         "profiles": [{"id": p["id"], "name": p["name"], "format": p["format"], "location": p["location_name"],
                       "location_id": p["location_id"], "is_default": p["is_default"]} for p in profiles.list_all()],
@@ -192,15 +194,72 @@ class DownloadRequest(BaseModel):
     title: str | None = None
     subtitle: str | None = None
     thumbnail: str | None = None
+    review: bool = False  # the client can show a review; old apps don't send it and download straight away
 
 
 @router.post("/downloads")
 async def download(body: DownloadRequest, who: dict = Depends(auth.require_client)):
     try:
         return await downloads.manager.enqueue(body.kind, body.id, body.profile_id, who["name"],
-                                               body.title, body.subtitle, body.thumbnail, body.location_id)
+                                               body.title, body.subtitle, body.thumbnail, body.location_id, body.review)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+class Confirm(BaseModel):
+    shared: dict = {}
+    songs: list[dict] = []
+    cover: dict | None = None
+
+
+class ReviewLookup(BaseModel):
+    item_id: int
+    query: str | None = None
+
+
+class ReviewPath(BaseModel):
+    item_id: int
+    fields: dict
+
+
+class ReviewAi(BaseModel):
+    songs: list[dict]
+    instruction: str | None = None
+    fields: list[str] | None = None
+
+
+@router.get("/jobs/{job_id}/review")
+def job_review(job_id: int, who: dict = Depends(auth.require_client)):
+    try:
+        return downloads.manager.review(job_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+
+
+@router.post("/jobs/{job_id}/confirm")
+def job_confirm(job_id: int, body: Confirm, who: dict = Depends(auth.require_client)):
+    return downloads.manager.confirm(job_id, body.shared, body.songs, body.cover)
+
+
+@router.post("/jobs/{job_id}/review/lookup")
+async def job_review_lookup(job_id: int, body: ReviewLookup, who: dict = Depends(auth.require_client)):
+    _, item = downloads.manager.review_item(job_id, body.item_id)
+    song = (db.jload(item["meta"], {}).get("review") or {}).get("original") or {"title": item["title"], "artist": item["artist"]}
+    return {"candidates": await metadata.lookup(song, 3, (body.query or "").strip() or None)}
+
+
+@router.post("/jobs/{job_id}/review/path")
+def job_review_path(job_id: int, body: ReviewPath, who: dict = Depends(auth.require_client)):
+    j, item = downloads.manager.review_item(job_id, body.item_id)
+    path, exists = downloads.manager._paths(j, item, body.fields)
+    return {"path": path, "exists": exists}
+
+
+@router.post("/jobs/{job_id}/review/ai")
+async def job_review_ai(job_id: int, body: ReviewAi, who: dict = Depends(auth.require_client)):
+    if len(body.songs) > 500:
+        raise HTTPException(400, "At most 500 songs per AI run")
+    return await ai.suggest(body.songs, body.instruction, body.fields)
 
 
 @router.get("/jobs")

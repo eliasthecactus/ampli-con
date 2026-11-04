@@ -1,10 +1,10 @@
 """Web GUI only: YouTube account, locations, profiles, settings, devices, yt-dlp."""
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
-from .. import auth, config, db, locations, profiles, settings_store, stream, youtube, ytdlp
+from .. import auth, config, db, files, locations, profiles, settings_store, stream, youtube, ytdlp
 
 router = APIRouter(prefix="/api", dependencies=[Depends(auth.require_user)])
 
@@ -48,15 +48,19 @@ def browse(path: str | None = None):
 
 
 @router.post("/locations")
-def create_location(body: dict):
-    return locations.save(body)
+def create_location(body: dict, tasks: BackgroundTasks):
+    out = locations.save(body)
+    tasks.add_task(files.scan, out["id"])
+    return out
 
 
 @router.put("/locations/{lid}")
-def update_location(lid: int, body: dict):
+def update_location(lid: int, body: dict, tasks: BackgroundTasks):
     if not locations.get(lid):
         raise HTTPException(404, "Location not found")
-    return locations.save(body, lid)
+    out = locations.save(body, lid)
+    tasks.add_task(files.scan, lid)  # also works out the file names again: rename_all may have changed
+    return {**out, "rename": files.rename_preview(lid)}
 
 
 @router.delete("/locations/{lid}")
@@ -98,19 +102,24 @@ def profile_preview(body: dict):
 
 @router.post("/profiles")
 def create_profile(body: dict):
-    return profiles.save(body)
+    out = profiles.save(body)
+    files.refresh_targets()
+    return {**out, "rename": files.rename_preview()}
 
 
 @router.put("/profiles/{pid}")
 def update_profile(pid: int, body: dict):
     if not db.row("SELECT id FROM profiles WHERE id = ?", [pid]):
         raise HTTPException(404, "Profile not found")
-    return profiles.save(body, pid)
+    out = profiles.save(body, pid)
+    files.refresh_targets()
+    return {**out, "rename": files.rename_preview()}  # the web interface asks before moving existing files
 
 
 @router.delete("/profiles/{pid}")
 def delete_profile(pid: int):
     profiles.delete(pid)
+    files.refresh_targets()
     return {"ok": True}
 
 

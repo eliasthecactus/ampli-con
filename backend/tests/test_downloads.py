@@ -41,8 +41,11 @@ def clean_downloads():
 
 def test_template_rendering():
     v = {**profiles.SAMPLE}
-    assert profiles.render(profiles.DEFAULT_ALBUM, v) == "Daft Punk/Discovery (2001)/01 One More Time"
-    assert profiles.render(profiles.DEFAULT_ALBUM, {**v, "disc_total": 2, "disc": 2}) == "Daft Punk/Discovery (2001)/2-01 One More Time"
+    assert profiles.render(profiles.DEFAULT_ALBUM, v) == "Daft Punk - One More Time"
+    folders = "{albumartist}/{album}[ ({year})]/[{disc}-]{track:02} {title}"
+    assert profiles.render(folders, v) == "Daft Punk/Discovery (2001)/01 One More Time"
+    assert profiles.render(folders, {**v, "disc_total": 2, "disc": 2}) == "Daft Punk/Discovery (2001)/2-01 One More Time"
+    assert profiles.render(folders, {**v, "year": "2001-03-07"}) == "Daft Punk/Discovery (2001)/01 One More Time"
     assert profiles.render("{artist}/{title}", {"artist": "AC/DC", "title": 'What? "Why"'}) == "AC_DC/What_ _Why_"
     with pytest.raises(ValueError, match="Unknown field"):
         profiles.render("{nope}", v)
@@ -50,15 +53,14 @@ def test_template_rendering():
         profiles.render("../{title}", v)
 
 
-def test_song_download_tags_and_skips(client, h):
+def test_song_download_tags_and_skips(client, web, h):
     clean_downloads()
     job = client.post("/api/downloads", json={"kind": "song", "id": "ttttttttt01"}, headers=h).json()
     assert job["requested_by"] == "Test iPhone"
     j = wait_for(client, job["id"], h)
     assert j["status"] == "done", j
     path = config.DOWNLOADS_DIR / j["items"][0]["file_path"]
-    # The song is on an album on YouTube Music, so it's filed like an album track.
-    assert j["items"][0]["file_path"] == "Artist/Album (2020)/01 Single ttt.m4a"
+    assert j["items"][0]["file_path"] == "Artist - Single ttt.m4a"
     t = MP4(path).tags
     assert t["\xa9nam"] == ["Single ttt"] and t["\xa9alb"] == ["Album"] and t["trkn"] == [(1, 3)]
     assert tags.video_id_of(path) == "ttttttttt01"
@@ -66,9 +68,15 @@ def test_song_download_tags_and_skips(client, h):
     again = wait_for(client, client.post("/api/downloads", json={"kind": "song", "id": "ttttttttt01"}, headers=h).json()["id"], h)
     assert again["status"] == "done" and again["skipped"] == 1
 
-    # Not on an album track list: filed as a single.
-    j = wait_for(client, client.post("/api/downloads", json={"kind": "song", "id": "abcdefghijk"}, headers=h).json()["id"], h)
-    assert j["items"][0]["file_path"] == "Artist/Album/Single abc.m4a"
+    # Not on an album track list: a single, so the profile's other template applies.
+    loc = db.row("SELECT id FROM locations ORDER BY id LIMIT 1")["id"]
+    p = web.post("/api/profiles", json={"name": "Folders", "location_id": loc, "format": "m4a", "single_template": "Singles/{title}",
+                                        "album_template": "{album}/{track:02} {title}"}).json()
+    j = wait_for(client, client.post("/api/downloads", json={"kind": "song", "id": "abcdefghijk", "profile_id": p["id"]}, headers=h).json()["id"], h)
+    assert j["items"][0]["file_path"] == "Singles/Single abc.m4a"
+    j = wait_for(client, client.post("/api/downloads", json={"kind": "song", "id": "ttttttttt01", "profile_id": p["id"]}, headers=h).json()["id"], h)
+    assert j["skipped"] == 1 or j["items"][0]["file_path"] == "Album/01 Single ttt.m4a"
+    web.delete(f"/api/profiles/{p['id']}")
 
 
 def test_album_download(client, h):
@@ -77,7 +85,7 @@ def test_album_download(client, h):
     j = wait_for(client, job["id"], h)
     assert j["status"] == "done" and j["total"] == 2, "the unavailable track is left out"
     files = sorted(p.relative_to(config.DOWNLOADS_DIR).as_posix() for p in config.DOWNLOADS_DIR.rglob("*.m4a"))
-    assert files == ["Artist/Album (2020)/01 One.m4a", "Artist/Album (2020)/02 Two.m4a"]
+    assert files == ["Artist - One.m4a", "Artist - Two.m4a"]
 
 
 def test_playlist_download_with_playlist_layout_and_m3u(client, web, h):
@@ -85,13 +93,13 @@ def test_playlist_download_with_playlist_layout_and_m3u(client, web, h):
     loc = db.row("SELECT id FROM locations ORDER BY id LIMIT 1")["id"]
     p = web.post("/api/profiles", json={"name": "Playlists MP3", "location_id": loc, "format": "mp3", "quality": "V0",
                                         "playlist_layout": "playlist"}).json()
-    assert p["preview"]["playlist_template"] == "Playlists/Road Trip/007 Daft Punk - One More Time.mp3"
+    assert p["preview"]["playlist_template"] == "Playlists/Road Trip/Daft Punk - One More Time.mp3"
     job = client.post("/api/downloads", json={"kind": "playlist", "id": "PLpublic", "profile_id": p["id"]}, headers=h).json()
     j = wait_for(client, job["id"], h)
     assert j["status"] == "done", j
-    assert [i["file_path"] for i in j["items"]] == ["Playlists/Public/001 Artist - P One.mp3", "Playlists/Public/002 Artist - P Two.mp3"]
+    assert [i["file_path"] for i in j["items"]] == ["Playlists/Public/Artist - P One.mp3", "Playlists/Public/Artist - P Two.mp3"]
     m3u = (config.DOWNLOADS_DIR / "Playlists" / "Public.m3u8").read_text()
-    assert "Public/001 Artist - P One.mp3" in m3u
+    assert "Public/Artist - P One.mp3" in m3u
     log = (config.CONFIG_DIR / "fake-ytdlp.log").read_text().splitlines()[-1]
     assert '"--audio-quality", "0"' in log and "music_offtopic" in log
     web.delete(f"/api/profiles/{p['id']}")

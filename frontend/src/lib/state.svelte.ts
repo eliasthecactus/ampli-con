@@ -21,6 +21,7 @@ export type Job = {
 	progress: number;
 	current: { id: number; title: string; artist: string | null; progress: number }[];
 	items?: any[];
+	review?: boolean;
 };
 
 export const session = $state({
@@ -35,7 +36,7 @@ export const live = $state({
 	jobs: {} as Record<number, Job>
 });
 
-export const ACTIVE = new Set(['preparing', 'queued', 'running']);
+export const ACTIVE = new Set(['preparing', 'review', 'queued', 'running']);
 
 export const toasts = $state({ list: [] as { id: number; text: string; kind: string }[] });
 let toastId = 0;
@@ -87,6 +88,10 @@ export function connectEvents() {
 		const d: Job = JSON.parse((e as MessageEvent).data);
 		if (ACTIVE.has(d.status)) live.jobs[d.id] = d;
 		else delete live.jobs[d.id];
+		if (d.status === 'review' && reviews.waiting.includes(d.id)) {
+			reviews.waiting = reviews.waiting.filter((x) => x !== d.id);
+			reviews.job ??= d.id;
+		}
 		emit('job', d);
 	});
 	es.addEventListener('progress', (e) => {
@@ -101,7 +106,7 @@ export function connectEvents() {
 		}
 		emit('progress', d);
 	});
-	for (const ev of ['item', 'account', 'job_removed', 'jobs_cleared']) {
+	for (const ev of ['item', 'account', 'job_removed', 'jobs_cleared', 'library']) {
 		es.addEventListener(ev, (e) => emit(ev, JSON.parse((e as MessageEvent).data)));
 	}
 }
@@ -114,6 +119,12 @@ export function disconnectEvents() {
 
 /** The web player: one song at a time through Amplicon's stream proxy. */
 export const player = $state({
-	song: null as null | { id: string; title: string; artist: string; thumbnail: string | null },
+	song: null as null | { id: string; title: string; artist: string; thumbnail: string | null; src?: string },
 	playing: false
 });
+
+/** The review before a download: the job shown right now, and the ones this browser started and waits for. */
+export const reviews = $state({ job: null as number | null, waiting: [] as number[] });
+export function reviewWhenReady(id: number) {
+	if (!reviews.waiting.includes(id)) reviews.waiting.push(id);
+}

@@ -13,10 +13,11 @@ MP3_QUALITIES = ("320", "256", "192", "V0", "V2")
 LAYOUTS = ("album", "playlist")
 ON_EXISTS = ("skip", "replace")
 
-DEFAULT_ALBUM = "{albumartist}/{album}[ ({year})]/[{disc}-]{track:02} {title}"
-DEFAULT_SINGLE = "{artist}/{album}/{title}"
-DEFAULT_PLAYLIST = "Playlists/{playlist}/{position:03} {artist} - {title}"
-FIELDS = ("artist", "albumartist", "album", "title", "track", "disc", "year", "playlist", "position", "video_id")
+DEFAULT_ALBUM = "{artist} - {title}"
+DEFAULT_SINGLE = "{artist} - {title}"
+DEFAULT_PLAYLIST = "Playlists/{playlist}/{artist} - {title}"
+FIELDS = ("artist", "albumartist", "album", "title", "track", "disc", "year", "genre", "label", "playlist", "position",
+          "video_id")
 
 _FIELD = re.compile(r"\{(\w+)(?::(\d+)d?)?\}")
 _OPTIONAL = re.compile(r"\[([^\[\]]*)\]")
@@ -66,7 +67,9 @@ def render(template: str, values: dict) -> str:
         raise ValueError("The template can't go up a folder")
     disc_total = values.get("disc_total") or 1
     values = {**values}
-    if disc_total <= 1:
+    if values.get("year"):
+        values["year"] = str(values["year"])[:4]  # the tag can hold a full date
+    if int(disc_total) <= 1:
         values["disc"] = None  # "[{disc}-]" only shows on multi-disc albums
     text = _OPTIONAL.sub(lambda m: _fill(m.group(1), values, False) or "", template)
     text = _fill(text, values, True)
@@ -77,8 +80,8 @@ def render(template: str, values: dict) -> str:
 
 
 SAMPLE = {"artist": "Daft Punk", "albumartist": "Daft Punk", "album": "Discovery", "title": "One More Time",
-          "track": 1, "disc": 1, "disc_total": 1, "year": "2001", "playlist": "Road Trip", "position": 7,
-          "video_id": "FGBhQbmPwH8"}
+          "track": 1, "disc": 1, "disc_total": 1, "year": "2001", "genre": "Electro", "label": "Daft Life",
+          "playlist": "Road Trip", "position": 7, "video_id": "FGBhQbmPwH8"}
 
 
 def preview(p: dict) -> dict:

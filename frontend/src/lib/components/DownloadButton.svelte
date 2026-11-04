@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Download, ChevronDown, Check } from '@lucide/svelte';
 	import { get, post } from '../api';
-	import { errorToast, toast } from '../state.svelte';
+	import { errorToast, reviewWhenReady, reviews, toast } from '../state.svelte';
 
 	let {
 		kind,
@@ -30,8 +30,12 @@
 		open = false;
 		busy = true;
 		try {
-			const j = await post('/downloads', { kind, id, title, subtitle, thumbnail, profile_id: profileId ?? null, location_id: locationId ?? null });
-			toast(`${j.title} is in the download queue (${j.profile_name} → ${j.location_name})`, 'ok');
+			const j = await post('/downloads', { kind, id, title, subtitle, thumbnail, profile_id: profileId ?? null, location_id: locationId ?? null, review: true });
+			if (j.status === 'review') reviews.job ??= j.id;
+			else if (j.review) {
+				reviewWhenReady(j.id);
+				toast(`Looking up ${j.title}…`);
+			} else toast(`${j.title} is in the download queue (${j.profile_name} → ${j.location_name})`, 'ok');
 			sent = true;
 		} catch (e) {
 			errorToast(e);

@@ -9,8 +9,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
-from . import auth, config, db, downloads, locations, profiles, settings_store, youtube, ytdlp
+from . import auth, config, db, downloads, files, locations, profiles, settings_store, youtube, ytdlp
 from .api import admin, auth_routes, library
+from .api import files as files_api
 from .events import bus
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -30,6 +31,8 @@ async def _background() -> None:
                     log.warning("yt-dlp update: %s", e)
             if tick % 6 == 0 and youtube.account():
                 await youtube.check()
+            if tick % 6 == 0:
+                await files.scan_soon()  # at the start too; picks up what changed on the disk without Amplicon
             days = int(settings_store.get("keep_finished_jobs_days") or 0)
             if days:
                 db.execute("DELETE FROM jobs WHERE status IN ('done', 'cancelled') AND finished_at < ?",
@@ -94,6 +97,7 @@ async def health():
 
 app.include_router(auth_routes.router)
 app.include_router(admin.router)
+app.include_router(files_api.router)
 app.include_router(library.router)
 
 _static_cache: dict[str, tuple[bytes, str]] = {}
