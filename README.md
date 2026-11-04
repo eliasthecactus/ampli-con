@@ -19,11 +19,15 @@ download locations, download profiles and a live view of the queue.
   cover and, if you want, lyrics.
 - **Review before downloading** (optional): Amplicon looks songs up on Deezer, shows what it found and lets you pick
   another match, change every field or upload a cover. The download starts when you confirm.
-- **Library**: every file in your locations in one list, with filters, sorting, a tag editor, bulk tools, a duplicate
-  check and an AI tag helper through OpenRouter (bring your own key; you see every suggestion before it's written).
-- **File names that stay in line**: `{artist} - {title}` by default, set per profile. Tag changes rename the file, and
-  changing a rule offers to rename what's already there. Files Amplicon didn't download are left alone unless the
-  location says otherwise.
+- **Import**: copy your collection into a location and it waits in the Import tab, in almost any format (M4A, MP3,
+  FLAC, WAV, AIFF, Ogg, Opus, WMA, AAC, APE, WavPack, Musepack, TAK, TTA, DSF). Importing gives files a profile and
+  changes nothing on the disk.
+- **Library**: every imported file and download in one list, with filters, sorting, a tag editor, bulk tools, a
+  duplicate check and an AI tag helper through OpenRouter (bring your own key; you see every suggestion before it's
+  written). Files deleted from the disk stay listed as deleted.
+- **Files that match their profile**: the library shows which files have the wrong name, are outside the profile's
+  location, lack tags the profile requires or have no cover, and Fix takes care of it: it moves and renames files and
+  looks up what's missing. `{artist} - {title}` is the default file name, set per profile. Formats stay as they are.
 - **Download profiles**, like the quality profiles of Sonarr and Radarr: format (M4A or Opus as YouTube has
   it, or MP3), target location, file name templates for album songs, singles and playlists, an M3U file for
   playlists, SponsorBlock, what to do with files that are already there. Pick one when you download, or let
@@ -126,8 +130,28 @@ File name templates use these fields:
 
 When you change a template, Amplicon shows how many files would move and renames them when you confirm. Tag changes in
 the library rename the file right away (Settings can turn that off). Files without a title or an artist keep their
-name, a name that's already taken is reported instead of overwritten, and M3U playlists follow along. Files Amplicon
-didn't download are only renamed in a location with "Apply file name rules to every file here".
+name, a name that's already taken is reported instead of overwritten, and M3U playlists follow along. Only imported
+files and downloads are renamed.
+
+### Importing a collection
+
+Copy your music into a location and press **Scan** in the Library (scans also run every 6 hours). The files show up in
+the **Import** tab, folder by folder, and stay out of the library until you import them or choose to ignore them.
+Importing assigns a profile and changes nothing on the disk, so it takes seconds, also for thousands of files.
+
+The library then shows what doesn't match the profile. **Fix** does two things, and you decide about each:
+
+- It moves files to the profile's location and gives them its file names.
+- It looks up what's missing on Deezer, about two files per second, in the background. It uses the tags, and for files
+  without tags the file name and folders. A `cover.jpg` next to a file is used as its cover. You see every change
+  before it's written, and can choose to only fill empty tags (the default) or to replace them with the match.
+
+Files keep their format. Songs you already have, also from an import, are marked in the review before a download, and
+a song with the same YouTube id isn't downloaded again.
+
+A file that disappears from the disk stays in the library as **Deleted**, with its tags, and comes back when the file
+does. Moved by hand, it keeps its profile. You can take deleted files off the list, or download them again if Amplicon
+downloaded them. A location that isn't mounted changes nothing.
 
 ### Metadata and the AI tag helper
 

@@ -23,6 +23,11 @@
 	}
 	loadAll();
 
+	const REQUIRED = [['title', 'Title'], ['artist', 'Artists'], ['album', 'Album'], ['albumartist', 'Album artist'], ['track', 'Track'], ['year', 'Year'], ['genre', 'Genre'], ['label', 'Label'], ['isrc', 'ISRC']];
+	function toggleRequired(k: string) {
+		const now = form.required_tags ?? [];
+		form.required_tags = now.includes(k) ? now.filter((x: string) => x !== k) : [...now, k];
+	}
 	function edit(p?: any) {
 		form = p
 			? { ...p }
@@ -37,6 +42,7 @@
 					embed_cover: true,
 					embed_lyrics: false,
 					sponsorblock: true,
+					required_tags: ['title', 'artist'],
 					is_default: false,
 					...options.defaults
 				};
@@ -183,6 +189,14 @@
 			</select>
 		</label>
 		<label class="check"><input type="checkbox" bind:checked={form.is_default} /> Default profile</label>
+
+		<div class="section-title">Library</div>
+		<p class="hint">Files of this profile that lack one of these tags show up as not compliant, like files with the wrong name, outside the profile's location or without a cover when covers are embedded. Formats stay as they are.</p>
+		<div class="tagpick">
+			{#each REQUIRED as [k, label] (k)}
+				<label class="check"><input type="checkbox" disabled={k === 'title' || k === 'artist'} checked={form.required_tags?.includes(k)} onchange={() => toggleRequired(k)} /> {label}</label>
+			{/each}
+		</div>
 	</div>
 	{#snippet footer()}
 		<button onclick={() => (open = false)}>Cancel</button>
@@ -191,6 +205,11 @@
 </Modal>
 
 <style>
+	.tagpick {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+		gap: 4px 12px;
+	}
 	.intro {
 		margin: -6px 0 18px;
 		max-width: 720px;

@@ -2,7 +2,7 @@
 	import { tick } from 'svelte';
 	import { Play, Sparkles, Trash2, Upload } from '@lucide/svelte';
 	import { get, post } from '../api';
-	import { bytes, duration } from '../format';
+	import { bytes, duration, shouldBe } from '../format';
 	import { errorToast, player, toast } from '../state.svelte';
 	import Modal from './Modal.svelte';
 	import TagForm from './TagForm.svelte';
@@ -118,14 +118,17 @@
 </script>
 
 <Modal bind:open side width="620px" title={tags.title || file?.path || 'File'} onclose={() => (id = null)}>
-	{#if file}
+	{#if file?.deleted_at}
+		<p>This file was deleted on {new Date(file.deleted_at * 1000).toLocaleDateString()}, so it can't be edited or played. If it comes back, the next scan brings it back here.</p>
+		<code class="small path">{file.path}</code>
+	{:else if file}
 		<div class="col gap">
 			<div class="top">
 				<div class="art">{#if shown}<img src={shown} alt="Cover" />{:else}<span class="faint small">No cover</span>{/if}</div>
 				<div class="grow col">
 					<code class="small path">{file.path}</code>
 					<span class="small faint">{file.location_name} · {file.format?.toUpperCase()}{file.bitrate ? ` · ${file.bitrate} kbit/s` : ''} · {duration(file.duration)} · {bytes(file.size)}</span>
-					{#if file.misnamed}<span class="small warn">Should be: <code>{file.target_path}</code></span>{/if}
+					{#if shouldBe(file)}<span class="small warn">Should be: <code>{shouldBe(file)}</code></span>{/if}
 					{#if file.error}<span class="small err">{file.error}</span>{/if}
 					<div class="row wrap">
 						<button class="sm" onclick={play}><Play size={13} /> Play</button>
@@ -146,8 +149,8 @@
 		</div>
 	{/if}
 	{#snippet footer()}
-		<button onclick={() => (id = null)}>Cancel</button>
-		<button class="primary" onclick={save} disabled={busy}>Save</button>
+		<button onclick={() => (id = null)}>{file?.deleted_at ? 'Close' : 'Cancel'}</button>
+		{#if !file?.deleted_at}<button class="primary" onclick={save} disabled={busy}>Save</button>{/if}
 	{/snippet}
 </Modal>
 

@@ -13,12 +13,13 @@ from mutagen.flac import FLAC
 from mutagen.mp4 import MP4
 from PIL import Image
 
-from app import ai, config, db, downloads, files, locations, metadata, settings_store, tags
+from app import ai, config, db, downloads, files, locations, metadata, profiles, settings_store, tags
 from tests.conftest import HAS_FFMPEG
 
 pytestmark = pytest.mark.skipif(not HAS_FFMPEG, reason="needs ffmpeg")
 CODECS = {".m4a": ["-c:a", "aac"], ".mp3": ["-c:a", "libmp3lame"], ".opus": ["-c:a", "libopus"], ".flac": ["-c:a", "flac"],
-          ".ogg": ["-ac", "2", "-c:a", "vorbis", "-strict", "-2"]}
+          ".ogg": ["-ac", "2", "-c:a", "vorbis", "-strict", "-2"], ".wav": ["-c:a", "pcm_s16le"], ".aiff": ["-c:a", "pcm_s16be"],
+          ".wma": ["-c:a", "wmav2"], ".wv": ["-c:a", "wavpack"], ".tta": ["-c:a", "tta"], ".aac": ["-c:a", "aac"]}
 _samples: dict[tuple, Path] = {}
 
 
@@ -54,21 +55,27 @@ def jpeg(color="red", size=(64, 64)) -> bytes:
 def tidy():
     for p in config.DOWNLOADS_DIR.iterdir() if config.DOWNLOADS_DIR.exists() else []:
         shutil.rmtree(p) if p.is_dir() else p.unlink()
+    files.SETTLE_SECONDS = 0
     yield
+    files.SETTLE_SECONDS = 30
     db.execute("DELETE FROM library_files")
     db.execute("DELETE FROM duplicate_ignores")
     db.execute("DELETE FROM settings")
-    db.execute("UPDATE locations SET rename_all = 0")
+    db.execute("DELETE FROM locations WHERE id != (SELECT MIN(id) FROM locations)")
 
 
 def scan(web) -> dict:
+    """Scans and imports everything with the default profile."""
     files.scan()
+    new = [r["id"] for r in db.rows("SELECT id FROM library_files WHERE state = 'new'")]
+    if new:
+        files.import_files(new, db.scalar("SELECT id FROM profiles ORDER BY is_default DESC, id LIMIT 1"))
     return web.get("/api/files?limit=100").json()
 
 
 # ---------------------------------------------------------------- tags
 
-@pytest.mark.parametrize("ext", [".m4a", ".mp3", ".opus", ".flac", ".ogg"])
+@pytest.mark.parametrize("ext", [".m4a", ".mp3", ".opus", ".flac", ".ogg", ".wav", ".aiff", ".wma", ".wv", ".tta", ".aac"])
 def test_tags_round_trip_every_format(client, ext):
     p = put(f"round{ext}", title="T", artist="A, B", album="Al", albumartist="A", year="2001-03-07", genre="Electro",
             label="Lab", isrc="GBDUW0000053", track=3, track_total=12, disc=2, disc_total=2, video_id="abcdefghijk")
@@ -141,6 +148,8 @@ def test_scan_lists_all_files_and_filters(web):
     assert sorted(x or "" for x in q(missing="album")) == ["", "Two"]
     assert q(missing="cover,genre,title") == [None]
     assert q(sort="year", dir="desc")[0] == "One", "newest first, empty ones last"
+    db.execute("UPDATE library_files SET profile_id = NULL WHERE title IS NOT 'Two'")
+    assert q(sort="profile_id")[0] == "Two", "the file with a profile comes first, none last"
     assert web.get("/api/files?sort=1;DROP TABLE jobs").status_code == 200, "unknown sort falls back"
     f = web.get("/api/files/facets").json()
     assert f["files"] == 3 and f["missing"]["cover"] == 3 and {x["value"] for x in f["formats"]} == {"m4a", "mp3", "flac"}
@@ -153,7 +162,7 @@ def test_scan_notices_changes_and_removals(web):
     tags.update(p, {"title": "New"})
     (config.DOWNLOADS_DIR / "b.m4a").unlink()
     r = scan(web)
-    assert [f["title"] for f in r["items"]] == ["New"]
+    assert sorted((f["title"], bool(f["deleted_at"])) for f in r["items"]) == [("B", True), ("New", False)]
 
 
 def test_offline_location_keeps_its_index(web):
@@ -187,15 +196,18 @@ def test_download_lands_in_the_library(client, web, app_token, monkeypatch):
         time.sleep(0.05)
     items = web.get("/api/files").json()["items"]
     assert [f["path"] for f in items] == ["Artist - Single ttt.m4a"]
-    assert items[0]["video_id"] == "ttttttttt01" and not items[0]["misnamed"]
+    assert items[0]["video_id"] == "ttttttttt01" and items[0]["state"] == "imported" and "name" not in items[0]["issues"]
 
 
 # ---------------------------------------------------------------- file names
 
-def test_rule_only_touches_amplicon_files_unless_the_location_says_so(web):
+def test_only_imported_files_follow_the_rule(web):
     put("Old Folder/mine.m4a", title="Mine", artist="Me", video_id="aaaaaaaaaaa")
     theirs = put("My Collection/Album/01 song.flac", title="Song", artist="Band")
-    scan(web)
+    files.scan()
+    assert web.get("/api/files/rename").json()["count"] == 0, "waiting for an import, nothing moves"
+    mine = db.scalar("SELECT id FROM library_files WHERE video_id = 'aaaaaaaaaaa'")
+    files.import_files([mine], db.scalar("SELECT id FROM profiles LIMIT 1"))
     pv = web.get("/api/files/rename").json()
     assert pv["count"] == 1 and pv["samples"][0]["target_path"] == "Me - Mine.m4a"
 
@@ -204,13 +216,7 @@ def test_rule_only_touches_amplicon_files_unless_the_location_says_so(web):
     assert (config.DOWNLOADS_DIR / "Me - Mine.m4a").exists()
     assert not (config.DOWNLOADS_DIR / "Old Folder").exists(), "the empty folder goes too"
     assert theirs.exists()
-
-    loc = db.row("SELECT * FROM locations ORDER BY id LIMIT 1")
-    db.update("locations", loc["id"], {"rename_all": 1})
-    files.refresh_targets()
-    assert web.get("/api/files/rename").json()["count"] == 1
-    web.post("/api/files/rename", json={})
-    assert (config.DOWNLOADS_DIR / "Band - Song.flac").exists()
+    assert "name" not in web.get("/api/files").json()["items"][0]["issues"], "fixed files stop showing up"
 
 
 def test_files_without_tags_are_never_renamed(web):
@@ -267,7 +273,7 @@ def test_edit_moves_the_file_when_the_rule_is_enforced(web):
 
     settings_store.update({"enforce_file_names": False})
     r = web.post("/api/files/apply", json={"changes": [{"id": fid, "fields": {"title": "Newer"}}]}).json()
-    assert r["renamed"] == 0 and web.get(f"/api/files/{fid}").json()["misnamed"] is True
+    assert r["renamed"] == 0 and "name" in web.get(f"/api/files/{fid}").json()["issues"]
 
 
 def test_edit_problems_do_not_stop_the_others(web):
@@ -300,7 +306,7 @@ def test_bulk_preview_writes_nothing_then_applies(web):
 
 
 def test_cover_upload_and_delete(web):
-    p = put("a.m4a", title="A", artist="A")
+    p = put("A - A.m4a", title="A", artist="A")
     fid = scan(web)["items"][0]["id"]
     assert web.get(f"/api/files/{fid}/cover").status_code == 404
     data = "data:image/jpeg;base64," + base64.b64encode(jpeg(size=(200, 100))).decode()
@@ -481,7 +487,7 @@ def test_review_song_with_edits(client, h, deezer, covers_stubbed):
     assert (s["suggested"]["genre"], s["suggested"]["label"], s["suggested"]["isrc"]) == ("Electro", "Label", "GBDUW0000053")
     assert (s["suggested"]["year"], s["suggested"]["disc"], s["suggested"]["track"]) == ("2001-03-07", 2, 4)
     assert s["path"] == "Artist, Guest - Single ttt.m4a" and s["exists"] is False
-    assert {c["source"] for c in s["covers"]} == {"youtube", "deezer"}
+    assert {c["source"] for c in s["covers"]} == {"original", "deezer"}
 
     p = client.post(f"/api/jobs/{j['id']}/review/path", json={"item_id": s["item_id"], "fields": {**s["suggested"], "title": "Edited"}}, headers=h).json()
     assert p["path"] == "Artist, Guest - Edited.m4a"
@@ -682,7 +688,7 @@ def test_review_ai(client, h, deezer, monkeypatch):
 
 # ---------------------------------------------------------------- upgrading
 
-def test_upgrade_from_0_1_keeps_custom_templates_and_moves_old_defaults(tmp_path):
+def test_upgrades_keep_custom_templates_and_downloads(tmp_path):
     import sqlite3
     conn = sqlite3.connect(tmp_path / "old.db")
     conn.executescript("".join(db.MIGRATIONS[:3]))
@@ -701,4 +707,53 @@ def test_upgrade_from_0_1_keeps_custom_templates_and_moves_old_defaults(tmp_path
     assert rows[1][1:3] == ("{album}/{title}", "Singles/{title}"), "a template someone wrote stays"
     assert conn.execute("SELECT title, review FROM jobs").fetchone() == ("kept", 0)
     assert conn.execute("SELECT rename_all FROM locations").fetchone() == (0,)
+
+    with_job = "INSERT INTO library_files (location_id, path, title, added_at, scanned_at) VALUES (1, ?, 'x', 5, 5)"
+    conn.execute(with_job, ["downloaded.m4a"])
+    conn.execute(with_job, ["other.m4a"])
+    conn.execute("UPDATE jobs SET profile_id = 1")
+    conn.execute("INSERT INTO job_items (job_id, position, video_id, title, file_path, updated_at) VALUES (1, 0, 'v', 'x', 'downloaded.m4a', 1)")
+    conn.executescript("BEGIN;" + db.MIGRATIONS[4] + ";COMMIT;")
+    assert conn.execute("SELECT path, state, profile_id, imported_at FROM library_files ORDER BY path").fetchall() == [
+        ("downloaded.m4a", "imported", 1, 5.0), ("other.m4a", "new", None, None)], "downloads stay, the rest waits for an import"
+    assert "rename_all" not in [r[1] for r in conn.execute("PRAGMA table_info(locations)")]
     conn.close()
+
+
+def test_move_preview_can_list_every_file(web):
+    for i in range(10):
+        put(f"wrong {i}.flac", title=f"Song {i}", artist="Band")
+    listed = scan(web)["items"]
+    assert all("name" in f["issues"] and f["target_location_name"] == f["location_name"] for f in listed)
+
+    def preview(**kw):
+        return web.post("/api/files/rename/preview", json=kw).json()
+    assert preview()["count"] == 10 and len(preview()["samples"]) == 8
+    assert len(preview(limit=100)["samples"]) == 10
+    assert len(preview(limit=0)["samples"]) == 1
+    fid = listed[0]["id"]
+    assert web.get(f"/api/files/{fid}").json()["target_location_name"] == listed[0]["location_name"]
+
+
+def test_names_are_safe_on_every_file_system():
+    def name(artist="Band", title="Song", template="{artist} - {title}"):
+        return profiles.render(template, {"artist": artist, "title": title})
+    assert name("AC/DC") == "AC_DC - Song"
+    assert name(".38 Special") == "_38 Special - Song", "a leading dot would hide the file"
+    assert name("Band", ".5 Gray") == "Band - .5 Gray", "only the start of a name matters"
+    assert name("Con", "Nul") == "Con - Nul", "not a device name as a whole"
+    assert profiles.render("{album}/{title}", {"album": "NUL", "title": "com1"}) == "_NUL/_com1"
+    assert profiles.clean("Con.live") == "_Con.live", "Windows ignores what follows the dot"
+    assert profiles.clean("Console") == "Console"
+
+    long = name("宇多田", "夜" * 200)
+    assert len(long.encode()) <= 200 and long.endswith("夜"), "Linux counts bytes, and a character stays whole"
+    assert len(name("A" * 90, "B" * 90)) == 120
+    assert profiles.clean("A" * 118 + " .B") == "A" * 118, "a cut name can't end in a space or dot"
+    assert len(profiles.clean("😀" * 80).encode()) <= 200
+
+
+def test_a_name_with_a_leading_dot_stays_visible(web):
+    put("x/song.flac", title="Caught Up in You", artist=".38 Special")
+    assert web.post("/api/files/rename", json={"ids": [scan(web)["items"][0]["id"]]}).json()["renamed"] == 1
+    assert (config.DOWNLOADS_DIR / "_38 Special - Caught Up in You.flac").exists()

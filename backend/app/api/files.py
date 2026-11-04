@@ -2,17 +2,20 @@
 import asyncio
 import hashlib
 import io
+import shutil
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from PIL import Image
 from pydantic import BaseModel
 
-from .. import ai, auth, config, db, downloads, files, locations, metadata, stream, tags
+from .. import ai, auth, config, db, downloads, files, fixes, locations, metadata, stream, tags
 
 router = APIRouter(prefix="/api/files", dependencies=[Depends(auth.require_user)])
 
-MAX_IDS = 5000
+MAX_IDS = 30000
+MAX_PREVIEW = 5000
+BROWSER_FORMATS = (".m4a", ".m4b", ".mp4", ".mp3", ".opus", ".ogg", ".oga", ".flac", ".wav", ".aac")
 
 
 class Ids(BaseModel):
@@ -31,6 +34,7 @@ class Apply(BaseModel):
 class Rename(BaseModel):
     location_id: int | None = None
     ids: list[int] | None = None
+    limit: int = 8
 
 
 class Ai(BaseModel):
@@ -45,6 +49,30 @@ class Lookup(BaseModel):
 
 class Key(BaseModel):
     key: str
+
+
+class Selection(BaseModel):
+    ids: list[int] | None = None
+    folders: list[dict] | None = None
+    state: str = "new"
+
+
+class Import(Selection):
+    profile_id: int
+
+
+class FixStart(BaseModel):
+    ids: list[int] | None = None
+    mode: str = "fill"
+
+
+class FixAccept(BaseModel):
+    ids: list[int] | None = None
+    group: str | None = None
+
+
+class FixDiscard(BaseModel):
+    ids: list[int] | None = None
 
 
 def _check(ids: list[int], most: int = MAX_IDS) -> None:
@@ -72,7 +100,7 @@ def list_ids(request: Request):
 
 @router.get("/facets")
 def facets():
-    return files.facets()
+    return {**files.facets(), "fix": fixes.counts()}
 
 
 @router.post("/scan")
@@ -81,9 +109,75 @@ def scan(tasks: BackgroundTasks):
     return {"ok": True}
 
 
+@router.get("/import")
+def waiting(state: str = "new"):
+    return files.folders("ignored" if state == "ignored" else "new")
+
+
+def _selected(body: Selection) -> list[int]:
+    ids = files.ids_of(body.ids, body.folders, body.state)
+    if not ids:
+        raise HTTPException(400, "Select at least one file")
+    return ids
+
+
+@router.post("/import")
+def import_files(body: Import):
+    try:
+        return files.import_files(_selected(body), body.profile_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/ignore")
+def ignore_files(body: Selection):
+    return files.ignore_files(_selected(body))
+
+
+@router.post("/restore")
+def restore_files(body: Selection):
+    return files.restore_files(_selected(body))
+
+
+@router.post("/forget")
+def forget(body: Ids):
+    _check(body.ids)
+    return files.forget(body.ids)
+
+
+@router.get("/fix")
+def fix_state(group: str = "confident", offset: int = 0):
+    return {"counts": fixes.counts(), "items": fixes.items(group, offset), "eligible": fixes.eligible()}
+
+
+@router.post("/fix")
+def fix_start(body: FixStart):
+    if body.ids is not None:
+        _check(body.ids)
+    return {"queued": fixes.manager.queue(body.ids, body.mode)}
+
+
+@router.post("/fix/apply")
+def fix_apply(body: FixAccept):
+    if body.ids is not None:
+        _check(body.ids)
+    return {"accepted": fixes.manager.accept(body.ids, body.group)}
+
+
+@router.post("/fix/discard")
+def fix_discard(body: FixDiscard):
+    fixes.manager.discard(body.ids)
+    return {"ok": True}
+
+
 @router.get("/rename")
 def rename_preview(location_id: int | None = None):
     return files.rename_preview(location_id)
+
+
+@router.post("/rename/preview")
+def rename_preview_of(body: Rename):
+    return files.rename_preview(body.location_id, body.ids, max(1, min(body.limit, MAX_PREVIEW)))
 
 
 @router.post("/rename")
@@ -157,7 +251,7 @@ async def lookup_many(body: Ids):
         t = d["tags"]
         old = {k: t.get(k) for k in tags.FIELDS if k not in ("comment", "lyrics")}
         async with gate:
-            found = await metadata.lookup({**t, "duration": d.get("duration")}, 1)
+            found = await metadata.lookup(files.lookup_song(d), 1)
         best = found[0] if found and found[0].get("score", 0) >= metadata.CONFIDENT else None
         new = {k: v for k, v in metadata.apply(old, best or {}).items() if k in old}
         return {"id": fid, "path": d["path"], "before": old, "after": new, "score": best["score"] if best else 0,
@@ -195,9 +289,7 @@ def detail(file_id: int):
 @router.post("/{file_id}/lookup")
 async def lookup(file_id: int, body: Lookup):
     d = files.detail(file_id)
-    song = {**d["tags"], "duration": d.get("duration")}
-    if not song.get("title"):
-        song["title"] = d["path"].rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    song = files.lookup_song(d)
     query = (body.query or "").strip() or None
     found = await metadata.lookup(song, 3, query)
     extra = await metadata.itunes_cover(song.get("albumartist") or song.get("artist") or "", song.get("album") or "")
@@ -234,9 +326,32 @@ async def cover(file_id: int, size: int = 0):
     return Response(data, media_type="image/jpeg", headers=headers)
 
 
+@router.get("/{file_id}/folder-cover")
+def folder_cover(file_id: int):
+    art = files.folder_cover(files.path_of(file_id))
+    if not art:
+        raise HTTPException(404, "No cover")
+    return FileResponse(art)
+
+
 @router.get("/{file_id}/audio")
-def audio(file_id: int):
+async def audio(file_id: int):
     path = files.path_of(file_id)
     if not path.exists():
         raise HTTPException(404, "File not found")
-    return FileResponse(path)
+    if path.suffix.lower() in BROWSER_FORMATS:
+        return FileResponse(path)
+    ffmpeg = shutil.which("ffmpeg")  # WMA, APE and others: browsers can't play them, so the preview is converted
+    if not ffmpeg:
+        raise HTTPException(415, "This format can't be played here")
+    proc = await asyncio.create_subprocess_exec(ffmpeg, "-loglevel", "error", "-i", str(path), "-vn", "-c:a", "libmp3lame", "-b:a", "192k",
+                                                "-f", "mp3", "pipe:1", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+
+    async def pump():
+        try:
+            while chunk := await proc.stdout.read(65536):
+                yield chunk
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+    return StreamingResponse(pump(), media_type="audio/mpeg")

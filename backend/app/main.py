@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
-from . import auth, config, db, downloads, files, locations, profiles, settings_store, youtube, ytdlp
+from . import auth, config, db, downloads, files, fixes, locations, profiles, settings_store, youtube, ytdlp
 from .api import admin, auth_routes, library
 from .api import files as files_api
 from .events import bus
@@ -31,7 +31,7 @@ async def _background() -> None:
                     log.warning("yt-dlp update: %s", e)
             if tick % 6 == 0 and youtube.account():
                 await youtube.check()
-            if tick % 6 == 0:
+            if tick % 6 == 0 or files.state["settling"]:  # settling: files that were still being copied
                 await files.scan_soon()  # at the start too; picks up what changed on the disk without Amplicon
             days = int(settings_store.get("keep_finished_jobs_days") or 0)
             if days:
@@ -57,12 +57,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001
         log.warning("yt-dlp not available: %s", e)
     downloads.manager.start()
+    fixes.manager.start()
     bg = None if config.DISABLE_BACKGROUND else asyncio.create_task(_background())
     log.info("Amplicon %s ready", config.VERSION)
     yield
     if bg:
         bg.cancel()
     await downloads.manager.stop()
+    await fixes.manager.stop()
 
 
 app = FastAPI(title="Amplicon", version=config.VERSION, lifespan=lifespan, docs_url="/api/docs", redoc_url=None,

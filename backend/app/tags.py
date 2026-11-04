@@ -1,4 +1,4 @@
-"""Reads and writes tags and covers: M4A, MP3, Opus, Ogg Vorbis and FLAC.
+"""Reads and writes tags and covers of every audio format the library lists.
 
 `write` tags a fresh download. `update` changes single fields of a file that's already in the library: everything
 Amplicon doesn't know about stays, and the file is only replaced once the new version is complete.
@@ -8,10 +8,14 @@ import io
 import logging
 import os
 import shutil
+import struct
 import uuid
 from pathlib import Path
 
 import mutagen
+from mutagen.aac import AAC
+from mutagen.apev2 import BINARY, APEValue
+from mutagen.asf import ASF, ASFByteArrayAttribute
 from mutagen.flac import FLAC, Picture
 from mutagen.id3 import (APIC, COMM, ID3, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TPUB, TRCK, TSRC, TXXX, USLT,
                          ID3NoHeaderError)
@@ -24,7 +28,12 @@ log = logging.getLogger("amplicon.tags")
 
 MP4_EXT = (".m4a", ".m4b", ".mp4")
 OGG_EXT = (".opus", ".ogg", ".oga")
-SUPPORTED = (*MP4_EXT, ".mp3", *OGG_EXT, ".flac")
+ID3_CHUNK_EXT = (".wav", ".aif", ".aiff", ".dsf")  # the ID3 tag is a part of the container
+ID3_PLAIN_EXT = (".mp3", ".aac", ".tta")  # the ID3 tag sits in front of the audio
+ID3_EXT = (*ID3_PLAIN_EXT, *ID3_CHUNK_EXT)
+APE_EXT = (".ape", ".wv", ".mpc", ".tak")
+ASF_EXT = (".wma",)
+SUPPORTED = (*MP4_EXT, *OGG_EXT, ".flac", *ID3_EXT, *APE_EXT, *ASF_EXT)
 
 TEXT_FIELDS = ("title", "artist", "albumartist", "album", "year", "genre", "label", "isrc", "comment", "lyrics")
 NUMBER_FIELDS = ("track", "track_total", "disc", "disc_total")
@@ -38,6 +47,16 @@ ID3_TEXT = {"title": ("TIT2", TIT2), "artist": ("TPE1", TPE1), "albumartist": ("
             "year": ("TDRC", TDRC), "genre": ("TCON", TCON), "label": ("TPUB", TPUB), "isrc": ("TSRC", TSRC)}
 VORBIS_TEXT = {"title": "title", "artist": "artist", "albumartist": "albumartist", "album": "album", "year": "date",
                "genre": "genre", "label": "label", "isrc": "isrc", "comment": "comment", "lyrics": "lyrics"}
+
+
+APE_TEXT = {"title": "Title", "artist": "Artist", "albumartist": "Album Artist", "album": "Album", "year": "Year",
+            "genre": "Genre", "label": "Label", "isrc": "ISRC", "comment": "Comment", "lyrics": "Lyrics"}
+APE_COVER = "Cover Art (Front)"
+ASF_TEXT = {"title": "Title", "artist": "Author", "albumartist": "WM/AlbumArtist", "album": "WM/AlbumTitle",
+            "year": "WM/Year", "genre": "WM/Genre", "label": "WM/Publisher", "isrc": "WM/ISRC", "comment": "Description",
+            "lyrics": "WM/Lyrics"}
+ASF_COVER = "WM/Picture"
+VIDEO_ID_KEY = "YOUTUBE_ID"
 
 
 def square_jpeg(data: bytes, size: int = 1400) -> bytes:
@@ -85,6 +104,44 @@ def _vorbis(path: Path):
         return OggOpus(path)  # .ogg is only the container
 
 
+def _id3_of(path: Path) -> tuple:
+    """(the file, its ID3 tag or None)."""
+    if path.suffix.lower() == ".aac":  # mutagen only reads the stream of these
+        f = AAC(path)
+        try:
+            return f, ID3(path)
+        except ID3NoHeaderError:
+            return f, None
+    f = mutagen.File(path)
+    return f, (f.tags if f is not None else None)
+
+
+def _asf_cover(value: bytes) -> bytes:
+    """WM/Picture: type, size, then the mime type and description as UTF-16 ending in a double zero, then the image."""
+    size = struct.unpack_from("<I", value, 1)[0]
+    pos = 5
+    for _ in range(2):
+        while value[pos:pos + 2] != b"\0\0":
+            pos += 2
+        pos += 2
+    return value[pos:pos + size]
+
+
+def _asf_value(t, key: str):
+    v = t.get(key)
+    return v[0].value if v else None
+
+
+def _asf_drop(t, key: str) -> None:
+    if key in t:
+        del t[key]
+
+
+def _ape_cover(value: bytes) -> bytes:
+    """The image comes after its file name and a zero."""
+    return value.split(b"\0", 1)[1] if b"\0" in value else value
+
+
 # ---------------------------------------------------------------- reading
 
 def read(path: Path) -> dict:
@@ -110,9 +167,8 @@ def read(path: Path) -> dict:
             out["video_id"] = bytes(t[MP4_VIDEO_ID][0]).decode("utf-8", "replace")
         out["has_cover"] = bool(t.get("covr"))
         out["format"] = "m4a"
-    elif ext == ".mp3":
-        f = mutagen.File(path)
-        t = f.tags if f is not None and f.tags is not None else None
+    elif ext in ID3_EXT:
+        f, t = _id3_of(path)
         if t is not None:
             for field, (key, _cls) in ID3_TEXT.items():
                 frame = t.get(key)
@@ -127,7 +183,7 @@ def read(path: Path) -> dict:
             vid = t.getall("TXXX:YOUTUBE_ID")
             out["video_id"] = str(vid[0].text[0]) if vid else None
             out["has_cover"] = bool(t.getall("APIC"))
-        out["format"] = "mp3"
+        out["format"] = "aiff" if ext == ".aif" else ext[1:]
     elif ext in (*OGG_EXT, ".flac"):
         f = _vorbis(path)
         for field, key in VORBIS_TEXT.items():
@@ -140,6 +196,31 @@ def read(path: Path) -> dict:
         out["video_id"] = _first(f.get("youtube_id")) or None
         out["has_cover"] = bool(f.get("metadata_block_picture")) or bool(getattr(f, "pictures", None))
         out["format"] = "flac" if ext == ".flac" else ("opus" if isinstance(f, OggOpus) else "ogg")
+    elif ext in APE_EXT:
+        f = mutagen.File(path)
+        if f is None:
+            raise ValueError("Not an audio file")
+        t = f.tags or {}
+        for field, key in APE_TEXT.items():
+            if key in t:
+                out[field] = str(t[key]) or None
+        out["track"], out["track_total"] = _pair(t["Track"]) if "Track" in t else (None, None)
+        out["disc"], out["disc_total"] = _pair(t["Disc"]) if "Disc" in t else (None, None)
+        out["video_id"] = str(t[VIDEO_ID_KEY]) if VIDEO_ID_KEY in t else None
+        out["has_cover"] = APE_COVER in t
+        out["format"] = ext[1:]
+    elif ext in ASF_EXT:
+        f = ASF(path)
+        t = f.tags
+        for field, key in ASF_TEXT.items():
+            if (v := _asf_value(t, key)) not in (None, ""):
+                out[field] = str(v)
+        out["track"], out["track_total"] = _pair(_asf_value(t, "WM/TrackNumber"))
+        out["track_total"] = out["track_total"] or _int(_asf_value(t, "TotalTracks"))
+        out["disc"], out["disc_total"] = _pair(_asf_value(t, "WM/PartOfSet"))
+        out["video_id"] = _asf_value(t, VIDEO_ID_KEY)
+        out["has_cover"] = bool(t.get(ASF_COVER))
+        out["format"] = "wma"
     else:
         raise ValueError(f"Can't read {ext} files")
     info = f.info if f is not None else None
@@ -157,9 +238,16 @@ def cover_of(path: Path) -> bytes | None:
         if ext in MP4_EXT:
             c = (MP4(path).tags or {}).get("covr")
             return bytes(c[0]) if c else None
-        if ext == ".mp3":
-            pics = ID3(path).getall("APIC")
+        if ext in ID3_EXT:
+            _f, t = _id3_of(path)
+            pics = t.getall("APIC") if t is not None else []
             return pics[0].data if pics else None
+        if ext in APE_EXT:
+            t = mutagen.File(path).tags or {}
+            return _ape_cover(t[APE_COVER].value) if APE_COVER in t else None
+        if ext in ASF_EXT:
+            v = _asf_value(ASF(path).tags, ASF_COVER)
+            return _asf_cover(v) if v else None
         f = _vorbis(path)
         if getattr(f, "pictures", None):
             return f.pictures[0].data
@@ -227,11 +315,18 @@ def _apply(path: Path, values: dict, cover: bytes | None = None, remove_cover: b
         elif remove_cover:
             t.pop("covr", None)
         f.save()
-    elif ext == ".mp3":
-        try:
-            t = ID3(path)
-        except ID3NoHeaderError:
-            t = ID3()
+    elif ext in ID3_EXT:
+        owner = None
+        if ext in ID3_CHUNK_EXT:
+            owner = mutagen.File(path)
+            if owner.tags is None:
+                owner.add_tags()
+            t = owner.tags
+        else:
+            try:
+                t = ID3(path)
+            except ID3NoHeaderError:
+                t = ID3()
         if clear:
             t.clear()
         for field, value in text.items():
@@ -264,7 +359,10 @@ def _apply(path: Path, values: dict, cover: bytes | None = None, remove_cover: b
             t.delall("APIC")
         if cover:
             t.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=cover))
-        t.save(path, v2_version=4)
+        if owner is not None:
+            owner.save()
+        else:
+            t.save(path, v2_version=4)
     elif ext in (*OGG_EXT, ".flac"):
         f = _vorbis(path)
         if clear:
@@ -286,6 +384,57 @@ def _apply(path: Path, values: dict, cover: bytes | None = None, remove_cover: b
             f["youtube_id"] = video_id
         if cover or remove_cover:
             _vorbis_picture(f, cover)
+        f.save()
+    elif ext in APE_EXT:
+        f = mutagen.File(path)
+        if f.tags is None:
+            f.add_tags()
+        t = f.tags
+        if clear:
+            t.clear()
+        for field, value in text.items():
+            t.pop(APE_TEXT[field], None)
+            if value:
+                t[APE_TEXT[field]] = value
+        if has_numbers:
+            for key, n, total in (("Track", numbers["track"], numbers["track_total"]),
+                                  ("Disc", numbers["disc"], numbers["disc_total"])):
+                t.pop(key, None)
+                if n:
+                    t[key] = f"{n}/{total}" if total else str(n)
+        if video_id:
+            t[VIDEO_ID_KEY] = video_id
+        if cover or remove_cover:
+            t.pop(APE_COVER, None)
+        if cover:
+            t[APE_COVER] = APEValue(b"cover.jpg\0" + cover, BINARY)
+        f.save()
+    elif ext in ASF_EXT:
+        f = ASF(path)
+        t = f.tags
+        if clear:
+            t.clear()
+        for field, value in text.items():
+            _asf_drop(t, ASF_TEXT[field])
+            if value:
+                t[ASF_TEXT[field]] = value
+        if has_numbers:
+            for key in ("WM/TrackNumber", "TotalTracks", "WM/PartOfSet"):
+                _asf_drop(t, key)
+            if numbers["track"]:
+                t["WM/TrackNumber"] = str(numbers["track"])
+                if numbers["track_total"]:
+                    t["TotalTracks"] = str(numbers["track_total"])
+            if numbers["disc"]:
+                total = numbers["disc_total"]
+                t["WM/PartOfSet"] = f"{numbers['disc']}/{total}" if total else str(numbers["disc"])
+        if video_id:
+            t[VIDEO_ID_KEY] = video_id
+        if cover or remove_cover:
+            _asf_drop(t, ASF_COVER)
+        if cover:
+            head = struct.pack("<bI", 3, len(cover)) + "image/jpeg".encode("utf-16-le") + b"\0\0" + b"\0\0"
+            t[ASF_COVER] = [ASFByteArrayAttribute(head + cover)]
         f.save()
     else:
         raise ValueError(f"Can't tag {ext} files")

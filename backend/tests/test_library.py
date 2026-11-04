@@ -30,7 +30,7 @@ def test_search_and_browse(client, h):
 
 def test_account_playlists_need_a_youtube_account(client, h):
     r = client.get("/api/library/playlists", headers=h)
-    assert r.status_code == 409 and "No YouTube account" in r.json()["detail"]
+    assert r.status_code == 409 and "No account" in r.json()["detail"]
 
 
 def test_connect_youtube_and_edit_playlists(web, h):

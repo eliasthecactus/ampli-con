@@ -106,7 +106,7 @@ export function connectEvents() {
 		}
 		emit('progress', d);
 	});
-	for (const ev of ['item', 'account', 'job_removed', 'jobs_cleared', 'library']) {
+	for (const ev of ['item', 'account', 'job_removed', 'jobs_cleared', 'library', 'fix']) {
 		es.addEventListener(ev, (e) => emit(ev, JSON.parse((e as MessageEvent).data)));
 	}
 }

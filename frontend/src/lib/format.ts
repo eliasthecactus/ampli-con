@@ -97,3 +97,10 @@ export const FIELD_LABELS: Record<string, string> = {
 	lyrics: 'Lyrics'
 };
 export const FIELDS = Object.keys(FIELD_LABELS);
+
+/** Where a file belongs when its profile wants it somewhere else, or null. */
+export function shouldBe(f: { issues?: string[]; target_path?: string | null; target_location_name?: string | null; location_name?: string | null }): string | null {
+	if (!f.target_path || !f.issues?.some((i) => i === 'name' || i === 'location')) return null;
+	const elsewhere = f.target_location_name && f.target_location_name !== f.location_name;
+	return elsewhere ? `${f.target_location_name}: ${f.target_path}` : f.target_path;
+}

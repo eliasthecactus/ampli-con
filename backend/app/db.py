@@ -177,6 +177,40 @@ MIGRATIONS: list[str] = [
     UPDATE profiles SET playlist_template = 'Playlists/{playlist}/{artist} - {title}'
         WHERE playlist_template = 'Playlists/{playlist}/{position:03} {artist} - {title}';
     """,
+    # 5: files join the library through an import, a profile says how they should look, deleted files stay listed
+    """
+    ALTER TABLE library_files ADD COLUMN state TEXT NOT NULL DEFAULT 'new';
+    ALTER TABLE library_files ADD COLUMN imported_at REAL;
+    ALTER TABLE library_files ADD COLUMN deleted_at REAL;
+    ALTER TABLE library_files ADD COLUMN target_location_id INTEGER;
+    ALTER TABLE library_files ADD COLUMN issues TEXT NOT NULL DEFAULT '';
+    ALTER TABLE library_files ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE profiles ADD COLUMN required_tags TEXT NOT NULL DEFAULT 'title,artist';
+    CREATE INDEX library_state ON library_files(state, deleted_at);
+    CREATE INDEX library_title ON library_files(title COLLATE NOCASE);
+    UPDATE library_files SET profile_id = (
+        SELECT j.profile_id FROM job_items ji JOIN jobs j ON j.id = ji.job_id
+        LEFT JOIN profiles p ON p.id = j.profile_id
+        WHERE ji.file_path = library_files.path AND COALESCE(j.location_id, p.location_id) = library_files.location_id
+        ORDER BY ji.id DESC LIMIT 1
+    ) WHERE profile_id IS NULL;
+    UPDATE library_files SET state = 'imported', imported_at = added_at WHERE profile_id IS NOT NULL;
+    UPDATE library_files SET pinned = 1 WHERE state = 'imported' AND location_id !=
+        (SELECT location_id FROM profiles WHERE profiles.id = library_files.profile_id);
+    UPDATE library_files SET state = 'imported', imported_at = added_at, profile_id = (
+        SELECT id FROM profiles WHERE location_id = library_files.location_id ORDER BY is_default DESC, id LIMIT 1
+    ) WHERE state = 'new' AND location_id IN (SELECT id FROM locations WHERE rename_all = 1);
+    ALTER TABLE locations DROP COLUMN rename_all;
+    CREATE TABLE fix_items (
+        file_id INTEGER PRIMARY KEY REFERENCES library_files(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'queued',
+        score REAL NOT NULL DEFAULT 0,
+        proposal TEXT NOT NULL DEFAULT '{}',
+        error TEXT,
+        updated_at REAL NOT NULL
+    );
+    CREATE INDEX fix_status ON fix_items(status);
+    """,
 ]
 
 

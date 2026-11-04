@@ -196,7 +196,7 @@
 									<span class="ellipsis">{s.fields.title}</span>
 									<span class="small faint ellipsis">{s.fields.artist}</span>
 								</span>
-								{#if s.exists}<span title="Already in this location"><TriangleAlert size={14} color="var(--warn)" /></span>{/if}
+								{#if s.exists || s.in_library}<span title="Already in your library"><TriangleAlert size={14} color="var(--warn)" /></span>{/if}
 								<span class="pill {s.confident ? 'ok' : 'warn'}">{s.confident ? 'Match' : 'Check'}</span>
 							</button>
 						</div>
@@ -208,7 +208,7 @@
 					{#each song.covers as c (c.url)}
 						<button class="cover" class:sel={isCover(c)} onclick={() => chooseCover(c)} title={c.source}>
 							<img src={c.url} alt="Cover from {c.source}" />
-							<span class="small">{c.source === 'youtube' ? 'YouTube' : c.source === 'deezer' ? 'Deezer' : c.source === 'itunes' ? 'Apple' : 'Yours'}</span>
+							<span class="small">{c.source === 'original' ? 'YouTube' : c.source === 'deezer' ? 'Deezer' : c.source === 'itunes' ? 'Apple' : 'Yours'}</span>
 						</button>
 					{/each}
 					<label class="cover add">
@@ -219,6 +219,9 @@
 				<TagForm bind:tags={song.fields} oninput={refreshPath} />
 				{#if song.path}
 					<div class="small path"><span class="faint">Saved as</span> <code>{song.path}</code></div>
+				{/if}
+				{#if song.in_library}
+					<div class="small warn"><TriangleAlert size={14} /> {song.in_library.match === 'video' ? 'Already in your library' : 'A song with this title and artist is already in your library'}: <code>{song.in_library.path}</code> ({song.in_library.location})</div>
 				{/if}
 				{#if song.exists}
 					<div class="small warn"><TriangleAlert size={14} /> This song is already in this location. With "Skip it" in the profile, it won't be downloaded and these tags are dropped.</div>

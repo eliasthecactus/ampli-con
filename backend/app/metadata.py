@@ -208,7 +208,13 @@ async def lookup(song: dict, details: int = 3, query: str | None = None) -> list
         c = _candidate(t)
         c["score"] = score(song, c)
         pairs.append((c, t))
-    pairs.sort(key=lambda p: p[0]["score"], reverse=True)
+    # The same recording is on many albums: the one the file already names goes first.
+    mine = norm(clean_title(song.get("album")))
+
+    def names_album(c: dict) -> bool:  # only a real match counts: the hint may be a folder called "Misc"
+        return bool(mine) and _ratio(mine, norm(clean_title(c.get("album")))) >= 0.85
+
+    pairs.sort(key=lambda p: (p[0]["score"], names_album(p[0])), reverse=True)
     pairs = pairs[:5]
     head = await asyncio.gather(*(_full(c, t) for c, t in pairs[:details]))
     return [*head, *(c for c, _ in pairs[details:])]

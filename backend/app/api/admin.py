@@ -59,8 +59,8 @@ def update_location(lid: int, body: dict, tasks: BackgroundTasks):
     if not locations.get(lid):
         raise HTTPException(404, "Location not found")
     out = locations.save(body, lid)
-    tasks.add_task(files.scan, lid)  # also works out the file names again: rename_all may have changed
-    return {**out, "rename": files.rename_preview(lid)}
+    tasks.add_task(files.scan, lid)
+    return out
 
 
 @router.delete("/locations/{lid}")
@@ -91,6 +91,7 @@ def list_profiles():
 @router.get("/profiles/options")
 def profile_options():
     return {"formats": profiles.FORMATS, "mp3_qualities": profiles.MP3_QUALITIES, "fields": profiles.FIELDS,
+            "requirable": profiles.REQUIRABLE,
             "defaults": {"album_template": profiles.DEFAULT_ALBUM, "single_template": profiles.DEFAULT_SINGLE,
                          "playlist_template": profiles.DEFAULT_PLAYLIST}}
 

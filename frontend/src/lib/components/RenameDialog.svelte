@@ -3,7 +3,7 @@
 	import { errorToast, toast } from '../state.svelte';
 	import Modal from './Modal.svelte';
 
-	let { plan = $bindable(null), done }: { plan?: { count: number; samples: { path: string; target_path: string }[] } | null; done?: () => void } = $props();
+	let { plan = $bindable(null), done }: { plan?: { count: number; samples: { path: string; target_path: string; location?: string; target_location?: string }[]; ids?: number[] } | null; done?: () => void } = $props();
 	let busy = $state(false);
 	let open = $state(false);
 	$effect(() => {
@@ -13,7 +13,7 @@
 	async function run() {
 		busy = true;
 		try {
-			const r = await post('/files/rename', {});
+			const r = await post('/files/rename', plan?.ids ? { ids: plan.ids } : {});
 			toast(`Renamed ${r.renamed} ${r.renamed === 1 ? 'file' : 'files'}`, 'ok');
 			if (r.problems.length) toast(`${r.problems.length} couldn't be renamed: ${r.problems[0].reason}`, 'error');
 			plan = null;
@@ -26,18 +26,18 @@
 	}
 </script>
 
-<Modal bind:open title="Rename existing files?" width="640px" onclose={() => (plan = null)}>
-	<p>{plan?.count} {plan?.count === 1 ? "file doesn't" : "files don't"} match the file name rules anymore.</p>
+<Modal bind:open title="Move and rename files?" width="640px" onclose={() => (plan = null)}>
+	<p>{plan?.count} {plan?.count === 1 ? "file doesn't" : "files don't"} match their profile's name or location.</p>
 	<div class="list">
 		{#each plan?.samples ?? [] as s (s.path)}
-			<div class="small"><code class="faint">{s.path}</code><br /><code class="to">→ {s.target_path}</code></div>
+			<div class="small"><code class="faint">{s.path}</code><br /><code class="to">→ {#if s.target_location && s.target_location !== s.location}{s.target_location}: {/if}{s.target_path}</code></div>
 		{/each}
 		{#if (plan?.count ?? 0) > (plan?.samples.length ?? 0)}<div class="small faint">and {(plan?.count ?? 0) - (plan?.samples.length ?? 0)} more</div>{/if}
 	</div>
 	<p class="hint">Playlist files follow along, and Navidrome or Jellyfin are asked to scan. A file is skipped if the new name is already taken.</p>
 	{#snippet footer()}
 		<button onclick={() => (plan = null)}>Not now</button>
-		<button class="primary" onclick={run} disabled={busy}>Rename {plan?.count} {plan?.count === 1 ? 'file' : 'files'}</button>
+		<button class="primary" onclick={run} disabled={busy}>Move {plan?.count} {plan?.count === 1 ? 'file' : 'files'}</button>
 	{/snippet}
 </Modal>
 

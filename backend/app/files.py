@@ -2,6 +2,11 @@
 
 The files stay the truth. The index is rebuilt from them by a scan, and a scan of a location that isn't mounted
 changes nothing, so a missing disk can't empty the library.
+
+A file a scan finds is `new` and waits in the Import tab; nothing happens to it there. Importing gives it a profile,
+and from then on the profile says where the file belongs and how it should look. Downloads start out imported.
+A file that disappears from the disk stays listed as deleted, so its history and profile survive a moved folder or
+a disk that comes back.
 """
 import asyncio
 import hashlib
@@ -10,6 +15,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from pathlib import Path
 
 from . import db, locations, metadata, profiles, settings_store, tags
@@ -18,16 +24,24 @@ from .events import bus
 log = logging.getLogger("amplicon.files")
 
 SORTS = {"title", "artist", "album", "albumartist", "year", "genre", "format", "bitrate", "duration", "size",
-         "added_at", "path", "track"}
+         "added_at", "path", "track", "profile_id"}
 MISSING = {"title": "title", "artist": "artist", "album": "album", "albumartist": "albumartist", "year": "year",
            "genre": "genre", "label": "label", "track": "track", "isrc": "isrc"}
 COLUMNS = ("id", "location_id", "path", "target_path", "size", "mtime", "format", "duration", "bitrate", "title",
            "artist", "albumartist", "album", "track", "track_total", "disc", "disc_total", "year", "genre", "label",
-           "isrc", "video_id", "has_cover", "has_lyrics", "error", "added_at")
+           "isrc", "video_id", "has_cover", "has_lyrics", "error", "added_at", "state", "profile_id", "imported_at",
+           "deleted_at", "target_location_id")
 INDEXED = ("title", "artist", "albumartist", "album", "track", "track_total", "disc", "disc_total", "year", "genre",
            "label", "isrc", "video_id", "format", "duration", "bitrate")
 
-state = {"running": False, "location": None, "seen": 0, "changed": 0, "finished_at": None}
+LIVE = "state = 'imported' AND deleted_at IS NULL"
+ISSUES = ("name", "location", "tags", "cover", "profile", "broken")
+COVER_NAMES = ("cover", "folder", "front", "albumart", "album")
+COVER_EXT = (".jpg", ".jpeg", ".png")
+SETTLE_SECONDS = 30  # a file changed this recently may still be copying
+SAME_SONG_SECONDS = 30  # only for a warning: a video edit of a song is often that much shorter than the album version
+
+state = {"running": False, "location": None, "seen": 0, "changed": 0, "settling": 0, "finished_at": None}
 _write_lock = threading.Lock()
 
 
@@ -50,7 +64,7 @@ def _record(path: Path) -> dict:
 def _upsert(location_id: int, rel: str, rec: dict, extra: dict | None = None) -> int:
     now = db.now()
     row = db.row("SELECT id FROM library_files WHERE location_id = ? AND path = ?", [location_id, rel])
-    fields = {**rec, **(extra or {}), "scanned_at": now}
+    fields = {**rec, **(extra or {}), "scanned_at": now, "deleted_at": None}
     if row:
         db.update("library_files", row["id"], fields)
         return row["id"]
@@ -63,7 +77,8 @@ def scan_location(loc: dict) -> None:
         log.info("location %s isn't mounted, keeping its index", loc["name"])
         return
     started = db.now()
-    known = {r["path"]: r for r in db.rows("SELECT id, path, size, mtime FROM library_files WHERE location_id = ?", [loc["id"]])}
+    known = {r["path"]: r for r in db.rows("SELECT id, path, size, mtime, state, deleted_at FROM library_files "
+                                           "WHERE location_id = ?", [loc["id"]])}
     seen: list[int] = []
     for folder, dirs, names in os.walk(root):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
@@ -81,29 +96,71 @@ def scan_location(loc: dict) -> None:
             if k and k["size"] == st.st_size and abs(k["mtime"] - st.st_mtime) < 0.001:
                 seen.append(k["id"])
                 continue
+            if time.time() - st.st_mtime < SETTLE_SECONDS:
+                state["settling"] += 1  # the next scan reads it, once it's complete
+                if k:
+                    seen.append(k["id"])
+                continue
             seen.append(_upsert(loc["id"], rel, _record(p)))
             state["changed"] += 1
     keep = set(seen)
     for rel, k in known.items():
         # A rename during the scan may have moved it, so what's on disk decides, not the list from the start.
-        if k["id"] not in keep and not (root / rel).exists():
-            db.execute("DELETE FROM library_files WHERE id = ? AND path = ? AND scanned_at < ?", [k["id"], rel, started])
-    if keep:
-        for i in range(0, len(seen), 500):
-            part = seen[i:i + 500]
-            db.execute(f"UPDATE library_files SET scanned_at = ? WHERE id IN ({','.join('?' * len(part))})", [db.now(), *part])
+        if k["id"] in keep or (root / rel).exists():
+            continue
+        where = "id = ? AND path = ? AND location_id = ? AND scanned_at < ?"
+        if k["state"] == "new":
+            db.execute(f"DELETE FROM library_files WHERE {where}", [k["id"], rel, loc["id"], started])
+        elif not k["deleted_at"]:
+            db.execute(f"UPDATE library_files SET deleted_at = ?, issues = '', target_path = NULL, target_location_id = NULL "
+                       f"WHERE {where}", [db.now(), k["id"], rel, loc["id"], started])
+    for i in range(0, len(seen), 500):
+        part = seen[i:i + 500]
+        db.execute(f"UPDATE library_files SET scanned_at = ?, deleted_at = NULL WHERE id IN ({','.join('?' * len(part))})",
+                   [db.now(), *part])
+
+
+def _follow_moves(started: float) -> None:
+    """A file moved outside Amplicon looks like one deleted and one new file. Joining them keeps its profile."""
+    fresh = db.rows("SELECT * FROM library_files WHERE state = 'new' AND added_at >= ?", [started])
+    if not fresh:
+        return
+    gone: dict[tuple, list[dict]] = {}
+    for g in db.rows("SELECT * FROM library_files WHERE deleted_at IS NOT NULL AND state != 'new'"):
+        gone.setdefault(("time", g["size"], int(g["mtime"])), []).append(g)
+        if g["title"]:
+            gone.setdefault(("tags", g["size"], g["title"], g["artist"]), []).append(g)
+    taken: set[int] = set()
+    for n in fresh:
+        keys = [("time", n["size"], int(n["mtime"])), ("tags", n["size"], n["title"], n["artist"])]
+        old = next((g for k in keys for g in gone.get(k, []) if g["id"] not in taken), None)
+        if old:
+            taken.add(old["id"])
+            with db.tx() as c:
+                c.execute("DELETE FROM library_files WHERE id = ?", [n["id"]])
+                c.execute("UPDATE library_files SET location_id = ?, path = ?, mtime = ?, scanned_at = ?, deleted_at = NULL "
+                          "WHERE id = ?", [n["location_id"], n["path"], n["mtime"], n["scanned_at"], old["id"]])
+        elif n["video_id"]:
+            # A download whose indexing failed: the job knows the profile.
+            job = db.row("SELECT j.profile_id FROM job_items ji JOIN jobs j ON j.id = ji.job_id "
+                         "WHERE ji.video_id = ? AND ji.file_path = ? AND j.profile_id IS NOT NULL ORDER BY ji.id DESC LIMIT 1",
+                         [n["video_id"], n["path"]])
+            if job:
+                db.update("library_files", n["id"], {"state": "imported", "profile_id": job["profile_id"], "imported_at": db.now()})
 
 
 def scan(location_id: int | None = None) -> None:
     if state["running"]:
         return
-    state.update(running=True, seen=0, changed=0)
+    state.update(running=True, seen=0, changed=0, settling=0)
     bus.publish("library", {**state})
+    started = db.now()
     try:
         for loc in [locations.get(location_id)] if location_id else db.rows("SELECT * FROM locations"):
             if loc:
                 state["location"] = loc["name"]
                 scan_location(loc)
+        _follow_moves(started)
         refresh_targets()
     except Exception:  # noqa: BLE001
         log.exception("library scan")
@@ -118,83 +175,92 @@ async def scan_soon(location_id: int | None = None) -> None:
 
 def index_file(loc: dict, rel: str, profile_id: int | None = None, playlist: str | None = None,
                position: int | None = None) -> None:
-    """A finished download goes straight into the library."""
+    """A finished download goes straight into the library. Saved to another location than its profile's on purpose,
+    it stays there."""
     p = Path(loc["path"]) / rel
-    fid = _upsert(loc["id"], rel, _record(p), {"profile_id": profile_id, "playlist": playlist, "position": position})
+    profile = db.row("SELECT location_id FROM profiles WHERE id = ?", [profile_id])
+    fid = _upsert(loc["id"], rel, _record(p), {"profile_id": profile_id, "playlist": playlist, "position": position,
+                                               "state": "imported", "imported_at": db.now(),
+                                               "pinned": int(bool(profile and profile["location_id"] != loc["id"]))})
+    video = db.scalar("SELECT video_id FROM library_files WHERE id = ?", [fid])
+    if video:  # downloaded again under another name: the old entry has done its job
+        db.execute("DELETE FROM library_files WHERE video_id = ? AND deleted_at IS NOT NULL AND id != ?", [video, fid])
     refresh_targets(ids=[fid])
     bus.publish("library", {**state})
 
 
-# ---------------------------------------------------------------- file names
+# ---------------------------------------------------------------- what a profile asks of a file
 
-def _rule_for(f: dict, loc: dict, by_id: dict[int, dict], per_location: dict[int, dict]) -> str | None:
-    """The name a file should have, or None when the rules don't apply to it."""
-    if not (f.get("video_id") or loc.get("rename_all")):
-        return None  # not downloaded by Amplicon, and the location leaves such files alone
-    if f.get("error") or not (f.get("title") and f.get("artist")):
-        return None  # a name made of missing tags would be worse than the one it has
-    profile = by_id.get(f.get("profile_id")) or per_location.get(loc["id"]) or per_location.get(0)
+def _plan(f: dict, by_id: dict[int, dict]) -> tuple[int | None, str | None, str]:
+    """(location it belongs in, path it should have there, what's wrong with it)."""
+    if f["state"] != "imported" or f["deleted_at"]:
+        return None, None, ""
+    if f["error"]:
+        return None, None, "broken"
+    profile = by_id.get(f["profile_id"])
     if not profile:
-        return None
-    if f.get("playlist") and profile["playlist_layout"] == "playlist":
-        template = profile["playlist_template"]
-    elif f.get("album") and f.get("track"):
-        template = profile["album_template"]
-    else:
-        template = profile["single_template"]
-    values = {**f, "albumartist": f.get("albumartist") or f.get("artist"), "disc_total": f.get("disc_total") or 1}
-    try:
-        return profiles.render(template, values) + Path(f["path"]).suffix.lower()
-    except ValueError:
-        return None
-
-
-def _rule_context() -> tuple[dict, dict, dict]:
-    locs = {loc["id"]: loc for loc in db.rows("SELECT * FROM locations")}
-    all_profiles = db.rows("SELECT * FROM profiles ORDER BY is_default DESC, id")
-    by_id = {p["id"]: p for p in all_profiles}
-    per_location: dict[int, dict] = {}
-    for p in reversed(all_profiles):  # the default profile wins, so it's written last
-        per_location[p["location_id"]] = p
-    if all_profiles:
-        per_location[0] = all_profiles[0]
-    return locs, by_id, per_location
+        return None, None, "profile"
+    issues = [f"tag:{k}" for k in profiles.required(profile) if not f.get(k)]
+    if profile["embed_cover"] and not f["has_cover"]:
+        issues.append("cover")
+    location_id = f["location_id"] if f["pinned"] else profile["location_id"]
+    target = f["path"]
+    if f["title"] and f["artist"]:  # a name made of missing tags would be worse than the one it has
+        if f["playlist"] and profile["playlist_layout"] == "playlist":
+            template = profile["playlist_template"]
+        elif f["album"] and f["track"]:
+            template = profile["album_template"]
+        else:
+            template = profile["single_template"]
+        values = {**f, "albumartist": f["albumartist"] or f["artist"], "disc_total": f["disc_total"] or 1}
+        try:
+            target = profiles.render(template, values) + Path(f["path"]).suffix.lower()
+        except ValueError:
+            pass
+    if location_id != f["location_id"]:
+        issues.append("location")
+    if target != f["path"]:
+        issues.append("name")
+    return location_id, target, ",".join(issues)
 
 
 def refresh_targets(ids: list[int] | None = None) -> None:
-    """Works out where every file belongs. Runs after scans, edits and changes of a profile or location."""
-    locs, by_id, per_location = _rule_context()
-    sql = "SELECT * FROM library_files"
-    params: list = []
-    if ids is not None:
-        if not ids:
-            return
-        sql += f" WHERE id IN ({','.join('?' * len(ids))})"
-        params = ids
-    rows = db.rows(sql, params)
+    """Works out where every file belongs and what's wrong with it. Runs after scans, edits and changes of a profile."""
+    by_id = {p["id"]: p for p in db.rows("SELECT * FROM profiles")}
+    rows = []
+    if ids is None:
+        rows = db.rows("SELECT * FROM library_files")
+    for i in range(0, len(ids or []), 500):
+        part = ids[i:i + 500]
+        rows += db.rows(f"SELECT * FROM library_files WHERE id IN ({','.join('?' * len(part))})", part)
     with db.tx() as c:
         for f in rows:
-            loc = locs.get(f["location_id"])
-            target = _rule_for(f, loc, by_id, per_location) if loc else None
-            if target != f["target_path"]:
-                c.execute("UPDATE library_files SET target_path = ? WHERE id = ?", [target, f["id"]])
+            location_id, target, issues = _plan(f, by_id)
+            if (location_id, target, issues) != (f["target_location_id"], f["target_path"], f["issues"]):
+                c.execute("UPDATE library_files SET target_location_id = ?, target_path = ?, issues = ? WHERE id = ?",
+                          [location_id, target, issues, f["id"]])
 
 
-def _misnamed_sql() -> str:
-    return "target_path IS NOT NULL AND target_path != path"
+def _moves_sql(alias: str = "") -> str:
+    a = f"{alias}." if alias else ""
+    return (f"{a}state = 'imported' AND {a}deleted_at IS NULL AND {a}target_path IS NOT NULL "
+            f"AND ({a}target_path != {a}path OR {a}target_location_id != {a}location_id)")
 
 
 def rename_preview(location_id: int | None = None, ids: list[int] | None = None, limit: int = 8) -> dict:
-    where, params = [_misnamed_sql()], []
+    where, params = [_moves_sql("f")], []
     if location_id:
-        where.append("location_id = ?")
+        where.append("f.location_id = ?")
         params.append(location_id)
     if ids is not None:
-        where.append(f"id IN ({','.join('?' * len(ids))})" if ids else "0")
+        where.append(f"f.id IN ({','.join('?' * len(ids))})" if ids else "0")
         params += ids
     clause = " AND ".join(where)
-    return {"count": db.scalar(f"SELECT COUNT(*) FROM library_files WHERE {clause}", params),
-            "samples": db.rows(f"SELECT id, path, target_path FROM library_files WHERE {clause} ORDER BY path LIMIT ?", [*params, limit])}
+    return {"count": db.scalar(f"SELECT COUNT(*) FROM library_files f WHERE {clause}", params),
+            "samples": db.rows("SELECT f.id, f.path, f.target_path, l.name AS location, t.name AS target_location "
+                               "FROM library_files f JOIN locations l ON l.id = f.location_id "
+                               f"LEFT JOIN locations t ON t.id = f.target_location_id WHERE {clause} ORDER BY f.path LIMIT ?",
+                               [*params, limit])}
 
 
 def _prune(folder: Path, root: Path) -> None:
@@ -231,15 +297,18 @@ def _fix_playlists(root: Path, moved: dict[str, str]) -> None:
 
 def _rename_rows(rows: list[dict]) -> dict:
     locs = {loc["id"]: loc for loc in db.rows("SELECT * FROM locations")}
-    renamed, problems = 0, []
+    renamed, problems, done = 0, [], []
     moved: dict[int, dict[str, str]] = {}
+    touched: set[int] = set()
     for f in rows:
-        loc = locs.get(f["location_id"])
-        if not loc or not f["target_path"] or f["target_path"] == f["path"]:
+        loc, to = locs.get(f["location_id"]), locs.get(f["target_location_id"])
+        if not loc or not to or not f["target_path"]:
             continue
-        root = Path(loc["path"]).resolve()
-        src, dest = root / f["path"], (root / f["target_path"]).resolve()
-        if root not in dest.parents:
+        if f["target_path"] == f["path"] and to["id"] == loc["id"]:
+            continue
+        root, dest_root = Path(loc["path"]).resolve(), Path(to["path"]).resolve()
+        src, dest = root / f["path"], (dest_root / f["target_path"]).resolve()
+        if dest_root not in dest.parents:
             problems.append({"id": f["id"], "path": f["path"], "reason": "The rule leads outside the location"})
             continue
         if not src.exists():
@@ -259,19 +328,26 @@ def _rename_rows(rows: list[dict]) -> dict:
             problems.append({"id": f["id"], "path": f["path"], "reason": str(e)[:200]})
             continue
         with db.tx() as c:
-            c.execute("UPDATE library_files SET path = ? WHERE id = ?", [f["target_path"], f["id"]])
+            # The name is free on the disk, so an entry that still holds it is a deleted file.
+            c.execute("DELETE FROM library_files WHERE location_id = ? AND path = ? AND id != ?",
+                      [to["id"], f["target_path"], f["id"]])
+            c.execute("UPDATE library_files SET path = ?, location_id = ? WHERE id = ?", [f["target_path"], to["id"], f["id"]])
             c.execute("UPDATE job_items SET file_path = ? WHERE file_path = ? AND job_id IN "
                       "(SELECT id FROM jobs WHERE location_id = ?)", [f["target_path"], f["path"], loc["id"]])
-        moved.setdefault(loc["id"], {})[f["path"]] = f["target_path"]
+        if to["id"] == loc["id"]:
+            moved.setdefault(loc["id"], {})[f["path"]] = f["target_path"]
+        touched |= {loc["id"], to["id"]}
+        done.append(f["id"])
         _prune(src.parent, root)
         renamed += 1
     for lid, paths in moved.items():
         _fix_playlists(Path(locs[lid]["path"]), paths)
-    return {"renamed": renamed, "problems": problems, "locations": list(moved)}
+    refresh_targets(ids=done)
+    return {"renamed": renamed, "problems": problems, "locations": sorted(touched)}
 
 
 def rename(location_id: int | None = None, ids: list[int] | None = None) -> dict:
-    where, params = [_misnamed_sql()], []
+    where, params = [_moves_sql()], []
     if location_id:
         where.append("location_id = ?")
         params.append(location_id)
@@ -287,19 +363,40 @@ def rename(location_id: int | None = None, ids: list[int] | None = None) -> dict
 def _public(f: dict) -> dict:
     out = {k: f.get(k) for k in COLUMNS}
     out["has_cover"], out["has_lyrics"] = bool(f.get("has_cover")), bool(f.get("has_lyrics"))
-    out["misnamed"] = bool(f.get("target_path")) and f.get("target_path") != f.get("path")
+    out["issues"] = [i for i in (f.get("issues") or "").split(",") if i]
+    out["target_path"] = f.get("target_path")
     out["location_name"] = f.get("location_name")
+    out["target_location_name"] = f.get("target_location_name")
+    out["profile_name"] = f.get("profile_name")
     return out
 
 
+def _issue_sql(name: str) -> str | None:
+    if name == "any":
+        return "f.issues != ''"
+    if name == "tags":
+        return "(',' || f.issues) LIKE '%,tag:%'"
+    return f"(',' || f.issues || ',') LIKE '%,{name},%'" if name in ISSUES else None
+
+
 def _filters(p: dict) -> tuple[str, list]:
-    where, params = [], []
+    where, params = ["f.state = ?"], [p.get("state") if p.get("state") in ("new", "ignored") else "imported"]
+    if p.get("deleted") == "only":
+        where.append("f.deleted_at IS NOT NULL")
+    elif p.get("deleted") == "no":
+        where.append("f.deleted_at IS NULL")
+    if p.get("folder") is not None and p.get("location_id"):
+        if p["folder"]:
+            where.append("substr(f.path, 1, length(?) + 1) = ? || '/' AND instr(substr(f.path, length(?) + 2), '/') = 0")
+            params += [p["folder"]] * 3
+        else:
+            where.append("instr(f.path, '/') = 0")
     if p.get("q"):
         for word in str(p["q"]).split():
             like = f"%{word}%"
             where.append("(f.title LIKE ? OR f.artist LIKE ? OR f.album LIKE ? OR f.albumartist LIKE ? OR f.path LIKE ?)")
             params += [like] * 5
-    for key in ("location_id", "format", "year"):
+    for key in ("location_id", "format", "year", "profile_id"):
         if p.get(key):
             where.append(f"f.{key} LIKE ?" if key == "year" else f"f.{key} = ?")
             params.append(f"{p[key]}%" if key == "year" else p[key])
@@ -307,6 +404,8 @@ def _filters(p: dict) -> tuple[str, list]:
         if p.get(key):
             where.append(f"f.{key} = ? COLLATE NOCASE")
             params.append(p[key])
+    if p.get("missing"):
+        where.append("f.deleted_at IS NULL")
     for name in str(p.get("missing") or "").split(","):
         if name in MISSING:
             where.append(f"(f.{MISSING[name]} IS NULL OR f.{MISSING[name]} = '')")
@@ -314,10 +413,9 @@ def _filters(p: dict) -> tuple[str, list]:
             where.append("f.has_cover = 0")
         elif name == "lyrics":
             where.append("f.has_lyrics = 0")
-    if p.get("misnamed"):
-        where.append("f.target_path IS NOT NULL AND f.target_path != f.path")
-    if p.get("broken"):
-        where.append("f.error IS NOT NULL")
+    wanted = [sql for name in str(p.get("issue") or "").split(",") if (sql := _issue_sql(name))]
+    if wanted:
+        where.append("(" + " OR ".join(wanted) + ")")
     if p.get("source") == "amplicon":
         where.append("f.video_id IS NOT NULL")
     elif p.get("source") == "other":
@@ -333,44 +431,54 @@ def search(p: dict) -> dict:
     empties = f"(f.{sort} IS NULL OR f.{sort} = '')"
     limit = max(1, min(int(p.get("limit") or 100), 500))
     offset = max(0, int(p.get("offset") or 0))
-    rows = db.rows(f"SELECT f.*, l.name AS location_name FROM library_files f JOIN locations l ON l.id = f.location_id {clause} "
+    rows = db.rows("SELECT f.*, l.name AS location_name, t.name AS target_location_name, p.name AS profile_name FROM library_files f "
+                   "JOIN locations l ON l.id = f.location_id LEFT JOIN locations t ON t.id = f.target_location_id "
+                   f"LEFT JOIN profiles p ON p.id = f.profile_id {clause} "
                    f"ORDER BY {empties}, f.{sort}{collate} {order}, f.title COLLATE NOCASE, f.id LIMIT ? OFFSET ?", [*params, limit, offset])
     total = db.scalar(f"SELECT COUNT(*) FROM library_files f {clause}", params)
     return {"total": total, "items": [_public(r) for r in rows], "scan": {**state}}
 
 
-def matching_ids(p: dict, cap: int = 5000) -> list[int]:
+def matching_ids(p: dict, cap: int = 30000) -> list[int]:
     clause, params = _filters(p)
     return [r["id"] for r in db.rows(f"SELECT f.id FROM library_files f {clause} LIMIT ?", [*params, cap])]
 
 
 def facets() -> dict:
     def top(col: str, n: int = 400) -> list[dict]:
-        return db.rows(f"SELECT {col} AS value, COUNT(*) AS n FROM library_files WHERE {col} IS NOT NULL AND {col} != '' "
+        return db.rows(f"SELECT {col} AS value, COUNT(*) AS n FROM library_files WHERE {LIVE} AND {col} IS NOT NULL AND {col} != '' "
                        f"GROUP BY {col} COLLATE NOCASE ORDER BY n DESC, value COLLATE NOCASE LIMIT ?", [n])
 
     def empty(col: str) -> int:
-        return db.scalar(f"SELECT COUNT(*) FROM library_files WHERE {col} IS NULL OR {col} = ''")
+        return db.scalar(f"SELECT COUNT(*) FROM library_files WHERE {LIVE} AND ({col} IS NULL OR {col} = '')")
 
-    totals = db.row("SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes, COALESCE(SUM(duration), 0) AS seconds FROM library_files")
+    def issue(name: str) -> int:
+        return db.scalar(f"SELECT COUNT(*) FROM library_files f WHERE {_issue_sql(name)}")
+
+    totals = db.row(f"SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes, COALESCE(SUM(duration), 0) AS seconds FROM library_files WHERE {LIVE}")
     return {
         **totals, "formats": top("format"), "genres": top("genre"), "artists": top("artist"), "albums": top("album"),
-        "years": db.rows("SELECT substr(year, 1, 4) AS value, COUNT(*) AS n FROM library_files WHERE year IS NOT NULL AND year != '' "
+        "years": db.rows(f"SELECT substr(year, 1, 4) AS value, COUNT(*) AS n FROM library_files WHERE {LIVE} AND year IS NOT NULL AND year != '' "
                          "GROUP BY value ORDER BY value DESC"),
         "missing": {**{k: empty(k) for k in ("title", "artist", "album", "year", "genre")},
-                    "cover": db.scalar("SELECT COUNT(*) FROM library_files WHERE has_cover = 0"),
-                    "lyrics": db.scalar("SELECT COUNT(*) FROM library_files WHERE has_lyrics = 0")},
-        "misnamed": db.scalar(f"SELECT COUNT(*) FROM library_files WHERE {_misnamed_sql()}"),
-        "broken": db.scalar("SELECT COUNT(*) FROM library_files WHERE error IS NOT NULL"),
+                    "cover": db.scalar(f"SELECT COUNT(*) FROM library_files WHERE {LIVE} AND has_cover = 0"),
+                    "lyrics": db.scalar(f"SELECT COUNT(*) FROM library_files WHERE {LIVE} AND has_lyrics = 0")},
+        "issues": {name: issue(name) for name in ("any", *ISSUES)},
+        "moves": db.scalar(f"SELECT COUNT(*) FROM library_files WHERE {_moves_sql()}"),
+        "deleted": db.scalar("SELECT COUNT(*) FROM library_files WHERE state = 'imported' AND deleted_at IS NOT NULL"),
+        "new": db.scalar("SELECT COUNT(*) FROM library_files WHERE state = 'new'"),
+        "ignored": db.scalar("SELECT COUNT(*) FROM library_files WHERE state = 'ignored'"),
+        "profiles": db.rows(f"SELECT p.id, p.name, COUNT(f.id) AS n FROM profiles p LEFT JOIN library_files f ON f.profile_id = p.id "
+                            f"AND f.state = 'imported' AND f.deleted_at IS NULL GROUP BY p.id ORDER BY p.name COLLATE NOCASE"),
         "locations": db.rows("SELECT l.id, l.name, COUNT(f.id) AS n FROM locations l LEFT JOIN library_files f ON f.location_id = l.id "
-                             "GROUP BY l.id ORDER BY l.name COLLATE NOCASE"),
+                             "AND f.state = 'imported' AND f.deleted_at IS NULL GROUP BY l.id ORDER BY l.name COLLATE NOCASE"),
         "scan": {**state},
     }
 
 
 def _file(file_id: int) -> tuple[dict, Path]:
-    f = db.row("SELECT f.*, l.name AS location_name, l.path AS root FROM library_files f JOIN locations l ON l.id = f.location_id "
-               "WHERE f.id = ?", [file_id])
+    f = db.row("SELECT f.*, l.name AS location_name, t.name AS target_location_name, l.path AS root FROM library_files f "
+               "JOIN locations l ON l.id = f.location_id LEFT JOIN locations t ON t.id = f.target_location_id WHERE f.id = ?", [file_id])
     if not f:
         raise ValueError("That file isn't in the library")
     return f, Path(f["root"]) / f["path"]
@@ -384,6 +492,8 @@ def detail(file_id: int) -> dict:
     f, path = _file(file_id)
     out = _public(f)
     out["tags"] = {k: f.get(k) for k in tags.FIELDS if k not in ("comment", "lyrics")}
+    if f["deleted_at"]:
+        return out
     try:
         t = tags.read(path)
         out["tags"] = {k: t.get(k) for k in tags.FIELDS}
@@ -423,6 +533,8 @@ def apply_changes(changes: list[dict]) -> dict:
         for ch in changes:
             try:
                 f, path = _file(int(ch["id"]))
+                if f["deleted_at"]:
+                    raise ValueError("This file was deleted")
                 fields = clean_changes(ch.get("fields") or {})
                 if fields or ch.get("cover") or ch.get("remove_cover"):
                     tags.update(path, fields, cover=ch.get("cover"), remove_cover=bool(ch.get("remove_cover")))
@@ -434,7 +546,7 @@ def apply_changes(changes: list[dict]) -> dict:
         refresh_targets(ids=touched)
         renamed = {"renamed": 0, "problems": [], "locations": []}
         if touched and settings_store.get("enforce_file_names"):
-            rows = db.rows(f"SELECT * FROM library_files WHERE id IN ({','.join('?' * len(touched))}) AND {_misnamed_sql()}", touched)
+            rows = db.rows(f"SELECT * FROM library_files WHERE id IN ({','.join('?' * len(touched))}) AND {_moves_sql()}", touched)
             renamed = _rename_rows(rows)
     return {"changed": done, "renamed": renamed["renamed"], "problems": problems + renamed["problems"],
             "locations": sorted({db.scalar("SELECT location_id FROM library_files WHERE id = ?", [i]) for i in touched} - {None})}
@@ -532,7 +644,8 @@ def _quality(f: dict) -> tuple:
 
 
 def duplicates(show_ignored: bool = False) -> list[dict]:
-    rows = db.rows("SELECT f.*, l.name AS location_name, l.path AS root FROM library_files f JOIN locations l ON l.id = f.location_id")
+    rows = db.rows("SELECT f.*, l.name AS location_name, l.path AS root FROM library_files f JOIN locations l ON l.id = f.location_id "
+                   "WHERE f.state = 'imported' AND f.deleted_at IS NULL")
     parent = {f["id"]: f["id"] for f in rows}
     reason: dict[int, set] = {}
 
@@ -619,3 +732,129 @@ def delete_files(ids: list[int]) -> dict:
             except (OSError, ValueError) as e:
                 problems.append({"id": fid, "reason": str(e)[:200]})
     return {"deleted": deleted, "problems": problems}
+
+
+def forget(ids: list[int]) -> dict:
+    """Takes deleted files off the list. Files that are still there are left alone."""
+    marks = ",".join("?" * len(ids))
+    n = db.scalar(f"SELECT COUNT(*) FROM library_files WHERE deleted_at IS NOT NULL AND id IN ({marks})", ids)
+    db.execute(f"DELETE FROM library_files WHERE deleted_at IS NOT NULL AND id IN ({marks})", ids)
+    return {"forgotten": n}
+
+
+# ---------------------------------------------------------------- importing
+
+def folders(state_name: str = "new", limit: int = 500) -> dict:
+    """What waits for an import, folder by folder: that's how a collection arrives."""
+    groups: dict[tuple, dict] = {}
+    rows = db.rows("SELECT f.location_id, l.name AS location_name, f.path, f.size, f.format, f.video_id FROM library_files f "
+                   "JOIN locations l ON l.id = f.location_id WHERE f.state = ? ORDER BY f.location_id, f.path COLLATE NOCASE", [state_name])
+    for r in rows:
+        folder = os.path.dirname(r["path"])
+        g = groups.setdefault((r["location_id"], folder), {
+            "location_id": r["location_id"], "location_name": r["location_name"], "folder": folder,
+            "files": 0, "bytes": 0, "formats": set(), "downloaded": 0})
+        g["files"] += 1
+        g["bytes"] += r["size"] or 0
+        g["downloaded"] += bool(r["video_id"])
+        if r["format"]:
+            g["formats"].add(r["format"])
+    items = [{**g, "formats": sorted(g["formats"])} for g in groups.values()]
+    return {"folders": items[:limit], "more": max(0, len(items) - limit), "total": len(rows)}
+
+
+def ids_of(ids: list[int] | None, picked: list[dict] | None, state_name: str) -> list[int]:
+    """The files of a selection: single ids, whole folders, or both."""
+    out = set(ids or [])
+    for f in picked or []:
+        out |= set(matching_ids({"state": state_name, "location_id": f.get("location_id"), "folder": f.get("folder") or ""}, 1000000))
+    return sorted(out)
+
+
+def _set_state(ids: list[int], fields: dict, where: str = "1") -> int:
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    n = 0
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        n += db.scalar(f"SELECT COUNT(*) FROM library_files WHERE {where} AND id IN ({','.join('?' * len(part))})", part)
+        db.execute(f"UPDATE library_files SET {cols} WHERE {where} AND id IN ({','.join('?' * len(part))})", [*fields.values(), *part])
+    return n
+
+
+def import_files(ids: list[int], profile_id: int) -> dict:
+    """Nothing on the disk changes: the files join the library and their profile shows what's left to fix. Works for
+    files already in the library too, to give them another profile."""
+    if not db.row("SELECT id FROM profiles WHERE id = ?", [profile_id]):
+        raise ValueError("Pick a profile")
+    n = _set_state(ids, {"state": "imported", "profile_id": profile_id, "pinned": 0, "imported_at": db.now()}, "deleted_at IS NULL")
+    refresh_targets(ids=ids)
+    return {"imported": n}
+
+
+def ignore_files(ids: list[int]) -> dict:
+    return {"ignored": _set_state(ids, {"state": "ignored"}, "state = 'new'")}
+
+
+def restore_files(ids: list[int]) -> dict:
+    """Back to the Import tab, from the ignored files or the library."""
+    n = _set_state(ids, {"state": "new", "profile_id": None, "pinned": 0, "imported_at": None, "issues": "",
+                         "target_path": None, "target_location_id": None}, "state != 'new' AND deleted_at IS NULL")
+    return {"restored": n}
+
+
+# ---------------------------------------------------------------- what's already there
+
+def in_library(video_id: str | None, title: str | None, artist: str | None, duration: float | None = None) -> dict | None:
+    """The file that already holds a song: the same YouTube video, or the same song by title, artist and length."""
+    usable = "f.deleted_at IS NULL AND f.state != 'ignored'"
+    head = ("SELECT f.path, f.format, f.title, f.artist, f.duration, l.name AS location FROM library_files f "
+            f"JOIN locations l ON l.id = f.location_id WHERE {usable}")
+    if video_id and (r := db.row(f"{head} AND f.video_id = ? LIMIT 1", [video_id])):
+        return {"match": "video", "path": r["path"], "location": r["location"], "format": r["format"]}
+    key = _song_key({"title": title, "artist": artist})
+    if not key:
+        return None
+    plain = metadata.clean_title(title).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    for r in db.rows(f"{head} AND f.title LIKE ? ESCAPE '\\'", [f"{plain}%"]):  # the file may have noise behind the title
+        close = not (duration and r["duration"]) or abs(duration - r["duration"]) <= SAME_SONG_SECONDS
+        if close and _song_key(r) == key:
+            return {"match": "song", "path": r["path"], "location": r["location"], "format": r["format"]}
+    return None
+
+
+# ---------------------------------------------------------------- helping a lookup
+
+def lookup_song(d: dict) -> dict:
+    """What a lookup can go on: the tags, and for a file without them its name and folders. Folders are only a hint
+    for the search, they can be called anything; `from_name` lists what the name says clearly enough to be a tag."""
+    song = {**d["tags"], "duration": d.get("duration"), "from_name": []}
+    if song.get("title") and song.get("artist"):
+        return song
+    path = Path(d["path"])
+    number = re.compile(r"^\s*\d{1,3}\s*[-._)]?\s+")
+    stem = number.sub("", path.stem)
+    artist, sep, title = stem.partition(" - ")
+    if sep:
+        song["from_name"] = [k for k in ("artist", "title") if not song.get(k)]
+        song["artist"] = song.get("artist") or artist.strip()
+        song["title"] = song.get("title") or number.sub("", title).strip()
+    else:
+        if song.get("artist") and not song.get("title"):
+            song["from_name"] = ["title"]
+        song["title"] = song.get("title") or stem.strip()
+    folders_up = path.parts[:-1]
+    if len(folders_up) >= 2:
+        song["artist"] = song.get("artist") or folders_up[-2]
+        song["album"] = song.get("album") or folders_up[-1]
+    return song
+
+
+def folder_cover(path: Path) -> Path | None:
+    """cover.jpg and friends next to the file."""
+    try:
+        for p in sorted(path.parent.iterdir()):
+            if p.stem.lower() in COVER_NAMES and p.suffix.lower() in COVER_EXT and p.is_file():
+                return p
+    except OSError:
+        pass
+    return None

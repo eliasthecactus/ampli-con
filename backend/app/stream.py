@@ -45,7 +45,7 @@ def http() -> httpx.AsyncClient:
 
 def check_id(video_id: str) -> str:
     if not VIDEO_ID.match(video_id):
-        raise HTTPException(400, "Not a YouTube video id")
+        raise HTTPException(400, "Not a song id")
     return video_id
 
 
@@ -231,14 +231,14 @@ async def _chunks(video_id: str, start: int, end: int, first: httpx.Response | N
         first = None
         try:
             if r.status_code >= 400:
-                raise RuntimeError(f"YouTube answered {r.status_code}")
+                raise RuntimeError(f"The source answered {r.status_code}")
             async for chunk in r.aiter_bytes(64 * 1024):
                 pos += len(chunk)
                 yield chunk
         finally:
             await r.aclose()
         if pos <= stop:
-            raise RuntimeError("YouTube closed the connection early")
+            raise RuntimeError("The source closed the connection early")
 
 
 def _parse_range(header: str | None, size: int) -> tuple[int, int] | None:
@@ -277,7 +277,7 @@ async def serve(video_id: str, request: Request) -> Response:
     first = await _open(video_id, start, min(start + CHUNK - 1, end))
     if first.status_code >= 400:
         await first.aclose()
-        raise HTTPException(502, f"YouTube answered {first.status_code}")
+        raise HTTPException(502, f"The source answered {first.status_code}")
     headers = {"Accept-Ranges": "bytes", "Content-Length": str(end - start + 1), "Cache-Control": "private, max-age=3600"}
     if rng:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"

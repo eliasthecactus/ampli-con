@@ -139,7 +139,7 @@ def _make(authenticated: bool):
         return YTMusic()
     a = account()
     if not a:
-        raise NotSignedIn("No YouTube account is connected. Connect one in Amplicon's web interface.")
+        raise NotSignedIn("No account is connected. Connect one in Amplicon's web interface.")
     headers = {
         "cookie": cookie_header(crypto.decrypt(a["cookies_enc"])),
         "authorization": "SAPISIDHASH 0",
@@ -175,8 +175,8 @@ async def call(fn, authenticated: bool | None = None):
         except Exception as e:
             msg = str(e)
             if any(x in msg for x in ("401", "403", "Sign in", "sign in")):
-                raise YouTubeError(f"YouTube refused the request: {msg[:200]}") from e
-            raise YouTubeError(f"YouTube Music: {msg[:300]}") from e
+                raise YouTubeError(f"The request was refused: {msg[:200]}") from e
+            raise YouTubeError(msg[:300]) from e
     return await asyncio.to_thread(run)
 
 
@@ -420,7 +420,7 @@ async def song_details(video_id: str) -> dict:
     tracks = data.get("tracks") or []
     first = next((t for t in tracks if t.get("videoId") == video_id), tracks[0] if tracks else None)
     if not first:
-        raise YouTubeError("YouTube doesn't know that song")
+        raise YouTubeError("That song wasn't found")
     s = song(first) or {"id": video_id, "title": video_id, "artist": "", "duration": 0}
     s["lyrics_id"] = data.get("lyrics")
     return s
@@ -441,7 +441,7 @@ async def lyrics(video_id: str) -> str | None:
 
 async def library_playlists() -> list[dict]:
     if not account():
-        raise NotSignedIn("No YouTube account is connected. Connect one in Amplicon's web interface.")
+        raise NotSignedIn("No account is connected. Connect one in Amplicon's web interface.")
     pls = await call(lambda yt: yt.get_library_playlists(limit=None), authenticated=True)
     out = [{"id": LIKED, "title": "Liked Music", "author": None, "thumbnail": None, "track_count": None, "editable": True}]
     for p in pls:
@@ -458,7 +458,7 @@ async def create_playlist(title: str, video_ids: list[str], privacy: str = "PRIV
     res = await call(lambda yt: yt.create_playlist(title, "", privacy_status=privacy, video_ids=video_ids or None),
                      authenticated=True)
     if not isinstance(res, str):
-        raise YouTubeError(f"YouTube didn't create the playlist: {str(res)[:200]}")
+        raise YouTubeError(f"The playlist wasn't created: {str(res)[:200]}")
     return res
 
 
@@ -483,7 +483,7 @@ async def add_to_playlist(playlist_id: str, video_ids: list[str]) -> None:
         res = await call(lambda yt, b=video_ids[i:i + 50]: yt.add_playlist_items(playlist_id, b, duplicates=True),
                          authenticated=True)
         if isinstance(res, dict) and res.get("status") not in (None, "STATUS_SUCCEEDED"):
-            raise YouTubeError(f"YouTube didn't add the songs: {str(res)[:200]}")
+            raise YouTubeError(f"The songs weren't added: {str(res)[:200]}")
 
 
 async def remove_from_playlist(playlist_id: str, items: list[dict]) -> None:
@@ -494,7 +494,7 @@ async def remove_from_playlist(playlist_id: str, items: list[dict]) -> None:
         return
     videos = [{"videoId": it["id"], "setVideoId": it["set_video_id"]} for it in items if it.get("set_video_id")]
     if len(videos) != len(items):
-        raise YouTubeError("The playlist changed on YouTube. Refresh it and try again.")
+        raise YouTubeError("The playlist changed on the server. Refresh it and try again.")
     await call(lambda yt: yt.remove_playlist_items(playlist_id, videos), authenticated=True)
 
 

@@ -1,10 +1,10 @@
 <script lang="ts">
-	let { options, value = $bindable() }: { options: { value: string; label: string }[]; value: string } = $props();
+	let { options, value = $bindable(), onchange }: { options: { value: string; label: string }[]; value: string; onchange?: () => void } = $props();
 </script>
 
 <div class="tabs" role="tablist">
 	{#each options as o (o.value)}
-		<button class="ghost" role="tab" aria-selected={value === o.value} class:on={value === o.value} onclick={() => (value = o.value)}>{o.label}</button>
+		<button class="ghost" role="tab" aria-selected={value === o.value} class:on={value === o.value} onclick={() => { value = o.value; onchange?.(); }}>{o.label}</button>
 	{/each}
 </div>
 

@@ -12,6 +12,7 @@ FORMATS = {
 MP3_QUALITIES = ("320", "256", "192", "V0", "V2")
 LAYOUTS = ("album", "playlist")
 ON_EXISTS = ("skip", "replace")
+REQUIRABLE = ("title", "artist", "album", "albumartist", "track", "year", "genre", "label", "isrc")
 
 DEFAULT_ALBUM = "{artist} - {title}"
 DEFAULT_SINGLE = "{artist} - {title}"
@@ -19,18 +20,27 @@ DEFAULT_PLAYLIST = "Playlists/{playlist}/{artist} - {title}"
 FIELDS = ("artist", "albumartist", "album", "title", "track", "disc", "year", "genre", "label", "playlist", "position",
           "video_id")
 
+MAX_CHARS = 120
+MAX_BYTES = 200
+WINDOWS_NAMES = {"con", "prn", "aux", "nul", *(f"{d}{i}" for d in ("com", "lpt") for i in range(1, 10))}
+
 _FIELD = re.compile(r"\{(\w+)(?::(\d+)d?)?\}")
 _OPTIONAL = re.compile(r"\[([^\[\]]*)\]")
 
 
-def clean(part: str) -> str:
-    """Safe for every file system: no slashes, no reserved characters, no trailing dots, sane length."""
+def clean(part: str, whole: bool = True) -> str:
+    """Safe for every file system: no slashes, no reserved characters, no trailing dots, sane length.
+    `whole` is for a full file or folder name, where a leading dot hides it and Windows reserves its device names."""
     part = unicodedata.normalize("NFC", part)
     part = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", part).strip()
     part = re.sub(r"\s+", " ", part).rstrip(". ")
-    if part in ("", ".", ".."):
-        part = "_"
-    return part[:120]
+    if whole:
+        part = re.sub(r"^\.", "_", part)
+        if part.split(".")[0].rstrip().lower() in WINDOWS_NAMES:
+            part = "_" + part
+    # Linux counts bytes. The extension comes on top, so this stays clear of its limit of 255.
+    part = part[:MAX_CHARS].encode()[:MAX_BYTES].decode(errors="ignore").rstrip(". ")
+    return part or "_"
 
 
 def _fill(text: str, values: dict, keep_empty: bool) -> str | None:
@@ -49,7 +59,7 @@ def _fill(text: str, values: dict, keep_empty: bool) -> str | None:
             return ""
         if width and str(v).isdigit():
             return str(v).zfill(int(width))
-        return clean(str(v)).replace("/", "_")
+        return clean(str(v), whole=False).replace("/", "_")
 
     out = _FIELD.sub(rep, text)
     if missing and not keep_empty:
@@ -95,11 +105,18 @@ def preview(p: dict) -> dict:
     return out
 
 
+def required(profile: dict) -> list[str]:
+    """The tags a file of this profile has to have. A file name needs the first two, so they're always in."""
+    chosen = str(profile.get("required_tags") or "").split(",")
+    return [k for k in REQUIRABLE if k in chosen or k in ("title", "artist")]
+
+
 def public(r: dict) -> dict:
     loc = locations.get(r.get("location_id"))
     out = {**r, "location_name": loc["name"] if loc else None, "location_path": loc["path"] if loc else None}
     for k in ("write_m3u", "embed_cover", "embed_lyrics", "sponsorblock", "is_default"):
         out[k] = bool(r[k])
+    out["required_tags"] = required(r)
     out["preview"] = preview(r)
     return out
 
@@ -144,6 +161,7 @@ def save(data: dict, profile_id: int | None = None) -> dict:
         "write_m3u": int(bool(data.get("write_m3u", True))), "embed_cover": int(bool(data.get("embed_cover", True))),
         "embed_lyrics": int(bool(data.get("embed_lyrics", False))),
         "sponsorblock": int(bool(data.get("sponsorblock", True))),
+        "required_tags": ",".join(required({"required_tags": ",".join(data.get("required_tags") or [])})),
     }
     for key in ("album_template", "single_template", "playlist_template"):
         render(fields[key], SAMPLE)  # raises ValueError with a readable message

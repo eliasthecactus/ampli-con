@@ -273,7 +273,7 @@ class Manager:
             best = candidates[0] if candidates else None
             confident = bool(best and best.get("score", 0) >= metadata.CONFIDENT)
             suggested = metadata.apply(song, best) if confident else dict(song)
-            covers = [{"source": "youtube", "url": song.get("cover")}] if song.get("cover") else []
+            covers = [{"source": "original", "url": song.get("cover")}] if song.get("cover") else []
             covers += [{"source": c["source"], "url": c["cover"]} for c in candidates if c.get("cover")]
             if extra:
                 covers.append({"source": "itunes", "url": extra})
@@ -310,7 +310,9 @@ class Manager:
             r = db.jload(item["meta"], {}).get("review") or {}
             suggested = r.get("suggested") or {}
             path, exists = self._paths(j, item, suggested)
-            songs.append({"item_id": item["id"], "position": item["position"], "video_id": item["video_id"],
+            owned = files.in_library(item["video_id"], suggested.get("title") or item["title"],
+                                     suggested.get("artist") or item["artist"], (r.get("original") or {}).get("duration"))
+            songs.append({"in_library": owned, "item_id": item["id"], "position": item["position"], "video_id": item["video_id"],
                           "original": r.get("original") or {}, "suggested": suggested, "candidates": r.get("candidates") or [],
                           "covers": r.get("covers") or [], "confidence": r.get("confidence") or 0,
                           "confident": bool(r.get("confident")), "path": path, "exists": exists})
@@ -677,6 +679,11 @@ def already_downloaded(video_id: str, root: Path, fmt: str) -> Path | None:
                      "AND file_path IS NOT NULL ORDER BY id DESC", [video_id]):
         p = (root / r["file_path"])
         if p.suffix.lstrip(".") == EXT[fmt] and p.exists() and tags.video_id_of(p) == video_id:
+            return p
+    for r in db.rows("SELECT f.path FROM library_files f JOIN locations l ON l.id = f.location_id WHERE f.video_id = ? AND l.path = ? "
+                     "AND f.deleted_at IS NULL AND f.state != 'ignored'", [video_id, str(root)]):
+        p = root / r["path"]
+        if p.suffix.lstrip(".") == EXT[fmt] and p.exists():
             return p
     return None
 

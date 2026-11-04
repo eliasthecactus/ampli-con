@@ -91,8 +91,6 @@
 	<div class="form">
 		<label class="field">Name<input type="text" bind:value={form.name} placeholder="e.g. Music library" /></label>
 		<div class="field">Folder<FolderPicker bind:value={form.path} placeholder="/music" /></div>
-		<label class="check"><input type="checkbox" bind:checked={form.rename_all} /> Apply file name rules to every file here</label>
-		<p class="hint">Off: only files Amplicon downloaded are renamed, so a collection you sorted yourself stays as it is.</p>
 		<label class="field">After a download, scan
 			<select bind:value={form.scan_kind}>
 				<option value="none">Nothing</option>
