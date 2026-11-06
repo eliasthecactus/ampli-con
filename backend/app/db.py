@@ -211,6 +211,10 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX fix_status ON fix_items(status);
     """,
+    # 9: the file that keeps a rename from happening
+    """
+    ALTER TABLE library_files ADD COLUMN conflict_id INTEGER REFERENCES library_files(id) ON DELETE SET NULL;
+    """,
 ]
 
 

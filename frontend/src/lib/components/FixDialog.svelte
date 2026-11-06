@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { FileCheck, Pencil, Wand2 } from '@lucide/svelte';
 	import { get, post } from '../api';
+	import { conflictText } from '../format';
 	import { errorToast, on, toast } from '../state.svelte';
 	import Modal from './Modal.svelte';
 	import Tabs from './Tabs.svelte';
@@ -86,8 +87,9 @@
 	}
 	const moveAll = () => run(async () => {
 		const r = await post('/files/rename', ids ? { ids } : {});
+		const failed = r.problems.filter((p: any) => !p.taken);
 		toast(`Moved ${label(r.renamed)}`, 'ok');
-		if (r.problems.length) toast(`${r.problems.length} couldn't be moved: ${r.problems[0].reason}`, 'error');
+		if (failed.length) toast(`${failed.length} couldn't be moved: ${failed[0].reason}`, 'error');
 		await load();
 		done();
 	});
@@ -133,7 +135,7 @@
 				<p>{label(moves.count)} {moves.count === 1 ? "doesn't have the name or location of its" : "don't have the name or location of their"} profile.</p>
 				<div class="moves">
 					{#each moves.samples as s (s.id)}
-						<div class="small sample"><code class="faint">{#if s.target_location !== s.location}{s.location}: {/if}{s.path}</code><br /><code class="to">→ {#if s.target_location !== s.location}{s.target_location}: {/if}{s.target_path}</code></div>
+						<div class="small sample"><code class="faint">{#if s.target_location !== s.location}{s.location}: {/if}{s.path}</code><br /><code class="to">→ {#if s.target_location !== s.location}{s.target_location}: {/if}{s.target_path}</code>{#if s.conflict}<br /><code class="clash">Collides with {conflictText(s.conflict)}</code>{/if}</div>
 					{/each}
 					{#if moves.count > moves.samples.length}
 						<div class="row more">
@@ -142,8 +144,9 @@
 						</div>
 					{/if}
 				</div>
-				<p class="hint">A file is skipped if the new name is already taken. Files without a title or artist keep their name until they have tags.</p>
-				<button onclick={moveAll} disabled={busy}><FileCheck size={15} /> Move {label(moves.count)}</button>
+				{#if moves.blocked}<p class="small clash">{label(moves.blocked)} {moves.blocked === 1 ? 'stays as it is because its new name is taken' : 'stay as they are because their new name is taken'}.</p>{/if}
+				<p class="hint">Files without a title or artist keep their name until they have tags.</p>
+				<button onclick={moveAll} disabled={busy || moves.count === moves.blocked}><FileCheck size={15} /> Move {label(moves.count - (moves.blocked ?? 0))}</button>
 			{:else}
 				<p class="muted">All files are where they belong.</p>
 			{/if}
@@ -237,6 +240,9 @@
 	}
 	.to {
 		color: var(--ok);
+	}
+	.clash {
+		color: var(--err);
 	}
 	progress {
 		width: 100%;

@@ -35,7 +35,10 @@ INDEXED = ("title", "artist", "albumartist", "album", "track", "track_total", "d
            "label", "isrc", "video_id", "format", "duration", "bitrate")
 
 LIVE = "state = 'imported' AND deleted_at IS NULL"
-ISSUES = ("name", "location", "tags", "cover", "profile", "broken")
+ISSUES = ("name", "taken", "location", "tags", "cover", "profile", "broken")
+# The file in the way of a rename, for every query that shows one.
+CONFLICT_COLS = "c.path AS conflict_path, c.state AS conflict_state, cl.name AS conflict_location"
+CONFLICT_JOIN = "LEFT JOIN library_files c ON c.id = f.conflict_id LEFT JOIN locations cl ON cl.id = c.location_id"
 COVER_NAMES = ("cover", "folder", "front", "albumart", "album")
 COVER_EXT = (".jpg", ".jpeg", ".png")
 SETTLE_SECONDS = 30  # a file changed this recently may still be copying
@@ -239,6 +242,45 @@ def refresh_targets(ids: list[int] | None = None) -> None:
             if (location_id, target, issues) != (f["target_location_id"], f["target_path"], f["issues"]):
                 c.execute("UPDATE library_files SET target_location_id = ?, target_path = ?, issues = ? WHERE id = ?",
                           [location_id, target, issues, f["id"]])
+    refresh_conflicts()
+
+
+def _blocked() -> dict[int, int]:
+    """Plays a rename of everything through, in the order of _rename_rows: {file that can't move: file in its way}.
+    The index knows every file on the disk, so a name held by a file waiting for its import counts too, and a name its
+    holder is about to give up doesn't. Of files after the same free name, the first gets it."""
+    moves = db.rows(f"SELECT id, location_id, path, target_location_id, target_path FROM library_files WHERE {_moves_sql()} ORDER BY id")
+    taken = {(r["location_id"], r["path"]): r["id"] for r in db.rows(
+        "SELECT h.id, h.location_id, h.path FROM library_files f JOIN library_files h "
+        "ON h.location_id = f.target_location_id AND h.path = f.target_path "
+        f"WHERE h.deleted_at IS NULL AND {_moves_sql('f')}")}
+    taken |= {(f["location_id"], f["path"]): f["id"] for f in moves}
+    waiting = moves
+    while waiting:
+        stuck = []
+        for f in waiting:
+            to = (f["target_location_id"], f["target_path"])
+            if to in taken:
+                stuck.append(f)
+            else:
+                del taken[(f["location_id"], f["path"])]
+                taken[to] = f["id"]
+        if len(stuck) == len(waiting):
+            break
+        waiting = stuck
+    return {f["id"]: taken[(f["target_location_id"], f["target_path"])] for f in waiting}
+
+
+def refresh_conflicts() -> None:
+    """Names free up and get taken by what happens to other files, so this looks at all of them."""
+    blocked = _blocked()
+    before = {r["id"]: r["conflict_id"] for r in db.rows("SELECT id, conflict_id FROM library_files WHERE conflict_id IS NOT NULL")}
+    with db.tx() as c:
+        for fid in before.keys() - blocked.keys():
+            c.execute("UPDATE library_files SET conflict_id = NULL WHERE id = ?", [fid])
+        for fid, holder in blocked.items():
+            if before.get(fid) != holder:
+                c.execute("UPDATE library_files SET conflict_id = ? WHERE id = ?", [holder, fid])
 
 
 def _moves_sql(alias: str = "") -> str:
@@ -257,10 +299,11 @@ def rename_preview(location_id: int | None = None, ids: list[int] | None = None,
         params += ids
     clause = " AND ".join(where)
     return {"count": db.scalar(f"SELECT COUNT(*) FROM library_files f WHERE {clause}", params),
-            "samples": db.rows("SELECT f.id, f.path, f.target_path, l.name AS location, t.name AS target_location "
-                               "FROM library_files f JOIN locations l ON l.id = f.location_id "
-                               f"LEFT JOIN locations t ON t.id = f.target_location_id WHERE {clause} ORDER BY f.path LIMIT ?",
-                               [*params, limit])}
+            "blocked": db.scalar(f"SELECT COUNT(*) FROM library_files f WHERE {clause} AND f.conflict_id IS NOT NULL", params),
+            "samples": [_with_conflict(r) for r in db.rows(
+                f"SELECT f.id, f.path, f.target_path, f.conflict_id, l.name AS location, t.name AS target_location, {CONFLICT_COLS} "
+                f"FROM library_files f JOIN locations l ON l.id = f.location_id LEFT JOIN locations t ON t.id = f.target_location_id "
+                f"{CONFLICT_JOIN} WHERE {clause} ORDER BY f.conflict_id IS NOT NULL DESC, f.path LIMIT ?", [*params, limit])]}
 
 
 def _prune(folder: Path, root: Path) -> None:
@@ -300,46 +343,53 @@ def _rename_rows(rows: list[dict]) -> dict:
     renamed, problems, done = 0, [], []
     moved: dict[int, dict[str, str]] = {}
     touched: set[int] = set()
-    for f in rows:
-        loc, to = locs.get(f["location_id"]), locs.get(f["target_location_id"])
-        if not loc or not to or not f["target_path"]:
-            continue
-        if f["target_path"] == f["path"] and to["id"] == loc["id"]:
-            continue
-        root, dest_root = Path(loc["path"]).resolve(), Path(to["path"]).resolve()
-        src, dest = root / f["path"], (dest_root / f["target_path"]).resolve()
-        if dest_root not in dest.parents:
-            problems.append({"id": f["id"], "path": f["path"], "reason": "The rule leads outside the location"})
-            continue
-        if not src.exists():
-            problems.append({"id": f["id"], "path": f["path"], "reason": "The file is gone"})
-            continue
-        if dest.exists() and not (dest.samefile(src)):
-            problems.append({"id": f["id"], "path": f["path"], "target": f["target_path"],
-                             "reason": "Another file already has that name"})
-            continue
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dest))
-            lrc = src.with_suffix(".lrc")
-            if lrc.exists():
-                shutil.move(str(lrc), str(dest.with_suffix(".lrc")))
-        except OSError as e:
-            problems.append({"id": f["id"], "path": f["path"], "reason": str(e)[:200]})
-            continue
-        with db.tx() as c:
-            # The name is free on the disk, so an entry that still holds it is a deleted file.
-            c.execute("DELETE FROM library_files WHERE location_id = ? AND path = ? AND id != ?",
-                      [to["id"], f["target_path"], f["id"]])
-            c.execute("UPDATE library_files SET path = ?, location_id = ? WHERE id = ?", [f["target_path"], to["id"], f["id"]])
-            c.execute("UPDATE job_items SET file_path = ? WHERE file_path = ? AND job_id IN "
-                      "(SELECT id FROM jobs WHERE location_id = ?)", [f["target_path"], f["path"], loc["id"]])
-        if to["id"] == loc["id"]:
-            moved.setdefault(loc["id"], {})[f["path"]] = f["target_path"]
-        touched |= {loc["id"], to["id"]}
-        done.append(f["id"])
-        _prune(src.parent, root)
-        renamed += 1
+    waiting, blocked = rows, []
+    while waiting:
+        blocked = []
+        for f in waiting:
+            loc, to = locs.get(f["location_id"]), locs.get(f["target_location_id"])
+            if not loc or not to or not f["target_path"]:
+                continue
+            if f["target_path"] == f["path"] and to["id"] == loc["id"]:
+                continue
+            root, dest_root = Path(loc["path"]).resolve(), Path(to["path"]).resolve()
+            src, dest = root / f["path"], (dest_root / f["target_path"]).resolve()
+            if dest_root not in dest.parents:
+                problems.append({"id": f["id"], "path": f["path"], "reason": "The rule leads outside the location"})
+                continue
+            if not src.exists():
+                problems.append({"id": f["id"], "path": f["path"], "reason": "The file is gone"})
+                continue
+            if dest.exists() and not (dest.samefile(src)):
+                blocked.append(f)
+                continue
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src), str(dest))
+                lrc = src.with_suffix(".lrc")
+                if lrc.exists():
+                    shutil.move(str(lrc), str(dest.with_suffix(".lrc")))
+            except OSError as e:
+                problems.append({"id": f["id"], "path": f["path"], "reason": str(e)[:200]})
+                continue
+            with db.tx() as c:
+                # The name is free on the disk, so an entry that still holds it is a deleted file.
+                c.execute("DELETE FROM library_files WHERE location_id = ? AND path = ? AND id != ?",
+                          [to["id"], f["target_path"], f["id"]])
+                c.execute("UPDATE library_files SET path = ?, location_id = ? WHERE id = ?", [f["target_path"], to["id"], f["id"]])
+                c.execute("UPDATE job_items SET file_path = ? WHERE file_path = ? AND job_id IN "
+                          "(SELECT id FROM jobs WHERE location_id = ?)", [f["target_path"], f["path"], loc["id"]])
+            if to["id"] == loc["id"]:
+                moved.setdefault(loc["id"], {})[f["path"]] = f["target_path"]
+            touched |= {loc["id"], to["id"]}
+            done.append(f["id"])
+            _prune(src.parent, root)
+            renamed += 1
+        if len(blocked) == len(waiting):  # nothing moved, so no name came free
+            break
+        waiting = blocked  # the file in the way may have moved on in the meantime
+    problems += [{"id": f["id"], "path": f["path"], "target": f["target_path"], "taken": True,
+                  "reason": "Another file already has that name"} for f in blocked]
     for lid, paths in moved.items():
         _fix_playlists(Path(locs[lid]["path"]), paths)
     refresh_targets(ids=done)
@@ -360,10 +410,18 @@ def rename(location_id: int | None = None, ids: list[int] | None = None) -> dict
 
 # ---------------------------------------------------------------- browsing
 
+def _with_conflict(f: dict) -> dict:
+    """Replaces the conflict columns with what the web interface needs to name that file."""
+    fid = f.pop("conflict_id", None)
+    found = {k: f.pop(f"conflict_{k}", None) for k in ("path", "state", "location")}
+    f["conflict"] = {"id": fid, **found} if fid and found["path"] else None
+    return f
+
+
 def _public(f: dict) -> dict:
-    out = {k: f.get(k) for k in COLUMNS}
+    out = _with_conflict({**{k: f.get(k) for k in COLUMNS}, **{k: f.get(k) for k in f if k.startswith("conflict_")}})
     out["has_cover"], out["has_lyrics"] = bool(f.get("has_cover")), bool(f.get("has_lyrics"))
-    out["issues"] = [i for i in (f.get("issues") or "").split(",") if i]
+    out["issues"] = [i for i in (f.get("issues") or "").split(",") if i] + (["taken"] if out["conflict"] else [])
     out["target_path"] = f.get("target_path")
     out["location_name"] = f.get("location_name")
     out["target_location_name"] = f.get("target_location_name")
@@ -376,6 +434,8 @@ def _issue_sql(name: str) -> str | None:
         return "f.issues != ''"
     if name == "tags":
         return "(',' || f.issues) LIKE '%,tag:%'"
+    if name == "taken":
+        return "f.conflict_id IS NOT NULL"
     return f"(',' || f.issues || ',') LIKE '%,{name},%'" if name in ISSUES else None
 
 
@@ -431,9 +491,9 @@ def search(p: dict) -> dict:
     empties = f"(f.{sort} IS NULL OR f.{sort} = '')"
     limit = max(1, min(int(p.get("limit") or 100), 500))
     offset = max(0, int(p.get("offset") or 0))
-    rows = db.rows("SELECT f.*, l.name AS location_name, t.name AS target_location_name, p.name AS profile_name FROM library_files f "
-                   "JOIN locations l ON l.id = f.location_id LEFT JOIN locations t ON t.id = f.target_location_id "
-                   f"LEFT JOIN profiles p ON p.id = f.profile_id {clause} "
+    rows = db.rows(f"SELECT f.*, l.name AS location_name, t.name AS target_location_name, p.name AS profile_name, {CONFLICT_COLS} "
+                   "FROM library_files f JOIN locations l ON l.id = f.location_id LEFT JOIN locations t ON t.id = f.target_location_id "
+                   f"LEFT JOIN profiles p ON p.id = f.profile_id {CONFLICT_JOIN} {clause} "
                    f"ORDER BY {empties}, f.{sort}{collate} {order}, f.title COLLATE NOCASE, f.id LIMIT ? OFFSET ?", [*params, limit, offset])
     total = db.scalar(f"SELECT COUNT(*) FROM library_files f {clause}", params)
     return {"total": total, "items": [_public(r) for r in rows], "scan": {**state}}
@@ -477,8 +537,8 @@ def facets() -> dict:
 
 
 def _file(file_id: int) -> tuple[dict, Path]:
-    f = db.row("SELECT f.*, l.name AS location_name, t.name AS target_location_name, l.path AS root FROM library_files f "
-               "JOIN locations l ON l.id = f.location_id LEFT JOIN locations t ON t.id = f.target_location_id WHERE f.id = ?", [file_id])
+    f = db.row(f"SELECT f.*, l.name AS location_name, t.name AS target_location_name, l.path AS root, {CONFLICT_COLS} FROM library_files f "
+               f"JOIN locations l ON l.id = f.location_id LEFT JOIN locations t ON t.id = f.target_location_id {CONFLICT_JOIN} WHERE f.id = ?", [file_id])
     if not f:
         raise ValueError("That file isn't in the library")
     return f, Path(f["root"]) / f["path"]
@@ -731,6 +791,7 @@ def delete_files(ids: list[int]) -> dict:
                 deleted += 1
             except (OSError, ValueError) as e:
                 problems.append({"id": fid, "reason": str(e)[:200]})
+    refresh_conflicts()
     return {"deleted": deleted, "problems": problems}
 
 
@@ -799,6 +860,7 @@ def restore_files(ids: list[int]) -> dict:
     """Back to the Import tab, from the ignored files or the library."""
     n = _set_state(ids, {"state": "new", "profile_id": None, "pinned": 0, "imported_at": None, "issues": "",
                          "target_path": None, "target_location_id": None}, "state != 'new' AND deleted_at IS NULL")
+    refresh_conflicts()
     return {"restored": n}
 
 

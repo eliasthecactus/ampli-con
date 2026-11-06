@@ -99,6 +99,11 @@ export const FIELD_LABELS: Record<string, string> = {
 export const FIELDS = Object.keys(FIELD_LABELS);
 
 /** Where a file belongs when its profile wants it somewhere else, or null. */
+// The file a rename can't get past. Where it is comes first: a long path gets cut off, and that file may not be in the library.
+export function conflictText(c: { path: string; state?: string | null }): string {
+	return `${c.state === 'new' ? 'a file in Import: ' : c.state === 'ignored' ? 'an ignored file: ' : ''}${c.path}`;
+}
+
 export function shouldBe(f: { issues?: string[]; target_path?: string | null; target_location_name?: string | null; location_name?: string | null }): string | null {
 	if (!f.target_path || !f.issues?.some((i) => i === 'name' || i === 'location')) return null;
 	const elsewhere = f.target_location_name && f.target_location_name !== f.location_name;

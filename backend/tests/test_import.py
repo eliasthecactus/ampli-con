@@ -525,3 +525,98 @@ def test_formats_a_browser_can_not_play_are_converted(web):
     r = web.get(f"/api/files/{ids['wma']}/audio")
     assert r.status_code == 200 and r.headers["content-type"] == "audio/mpeg" and len(r.content) > 500
     assert web.get(f"/api/files/{ids['wav']}/audio").headers["content-type"].startswith("audio/")
+
+
+def by_path(web) -> dict[str, dict]:
+    return {f["path"]: f for f in library(web)}
+
+
+def test_a_name_held_by_a_file_waiting_for_its_import_is_taken(web):
+    put("A - Song.m4a", title="Song", artist="A")
+    put("sub/x.m4a", title="Song", artist="A")
+    files.scan()
+    r = web.post("/api/files/import", json={"profile_id": profile_id(), "folders": [f for f in waiting(web) if f["folder"] == "sub"]})
+    assert r.status_code == 200, r.text
+    f = by_path(web)["sub/x.m4a"]
+    assert "taken" in f["issues"] and "name" in f["issues"]
+    assert f["conflict"]["path"] == "A - Song.m4a" and f["conflict"]["state"] == "new"
+    assert web.get("/api/files/facets").json()["issues"]["taken"] == 1
+    assert [x["path"] for x in library(web, issue="taken")] == ["sub/x.m4a"]
+    assert web.get(f"/api/files/{f['id']}").json()["conflict"]["id"] == f["conflict"]["id"]
+
+    plan = web.post("/api/files/rename/preview", json={}).json()
+    assert plan["count"] == plan["blocked"] == 1 and plan["samples"][0]["conflict"]["path"] == "A - Song.m4a"
+    out = web.post("/api/files/rename", json={}).json()
+    assert out["renamed"] == 0 and out["problems"][0]["taken"]
+
+
+@pytest.mark.parametrize("holder", [{}, {"title": "Song", "artist": "A"}], ids=["no tags", "another length"])
+def test_a_name_taken_by_a_file_that_is_no_duplicate(web, holder):
+    put("A - Song.m4a", 8, **holder)
+    put("sub/x.m4a", title="Song", artist="A")
+    files.scan()
+    import_all(web)
+    assert not web.get("/api/files/duplicates").json()["groups"]
+    assert by_path(web)["sub/x.m4a"]["conflict"]["path"] == "A - Song.m4a"
+
+
+def test_the_conflict_ends_with_the_file_in_the_way(web):
+    put("A - Song.m4a", title="Song", artist="A")
+    put("sub/x.m4a", title="Song", artist="A")
+    files.scan()
+    import_all(web)
+    now = by_path(web)
+    assert web.post("/api/files/delete", json={"ids": [now["sub/x.m4a"]["conflict"]["id"]]}).json()["deleted"] == 1
+    assert by_path(web)["sub/x.m4a"]["conflict"] is None
+    assert web.post("/api/files/rename", json={}).json()["renamed"] == 1
+
+
+def test_the_conflict_ends_with_other_tags(web):
+    put("A - Song.m4a", title="Song", artist="A")
+    put("sub/x.m4a", title="Song", artist="A")
+    files.scan()
+    import_all(web)
+    fid = by_path(web)["sub/x.m4a"]["id"]
+    files.apply_changes([{"id": fid, "fields": {"title": "Other"}}])
+    assert not [f for f in library(web) if f["conflict"]]
+    assert (config.DOWNLOADS_DIR / "A - Other.m4a").exists()
+
+
+def test_a_name_its_holder_gives_up_is_free(web):
+    # The holder has the higher id, so the first pass of a rename still finds it in the way.
+    put("a/first.m4a", title="Song", artist="A")
+    put("z/A - Song.m4a", title="Song", artist="A")
+    files.scan()
+    import_all(web)
+    first, holder = db.rows("SELECT id, path FROM library_files ORDER BY id")
+    with db.tx() as c:  # the first wants the holder's path, the holder wants a free one
+        c.execute("UPDATE library_files SET target_path = ? WHERE id = ?", [holder["path"], first["id"]])
+        c.execute("UPDATE library_files SET target_path = 'A - Free.m4a' WHERE id = ?", [holder["id"]])
+    assert files._blocked() == {}
+    out = files._rename_rows(db.rows("SELECT * FROM library_files ORDER BY id"))
+    assert out["renamed"] == 2 and not out["problems"]
+    assert (config.DOWNLOADS_DIR / holder["path"]).exists() and (config.DOWNLOADS_DIR / "A - Free.m4a").exists()
+
+
+def test_of_two_files_after_a_free_name_the_second_is_told(web):
+    put("one/x.m4a", title="Song", artist="A")
+    put("two/x.m4a", title="Song", artist="A")
+    files.scan()
+    import_all(web)
+    now = by_path(web)
+    assert now["one/x.m4a"]["conflict"] is None
+    assert now["two/x.m4a"]["conflict"]["path"] == "one/x.m4a"
+    assert web.post("/api/files/rename", json={}).json()["renamed"] == 1
+    assert by_path(web)["two/x.m4a"]["conflict"]["path"] == "A - Song.m4a", "it follows the file to its new name"
+
+
+def test_files_swapping_names_block_each_other(web):
+    put("a.m4a", title="Song", artist="A")
+    put("b.m4a", title="Song", artist="A")
+    files.scan()
+    import_all(web)
+    a, b = db.rows("SELECT id, path FROM library_files ORDER BY path")
+    with db.tx() as c:
+        c.execute("UPDATE library_files SET target_path = ? WHERE id = ?", [b["path"], a["id"]])
+        c.execute("UPDATE library_files SET target_path = ? WHERE id = ?", [a["path"], b["id"]])
+    assert files._blocked() == {a["id"]: b["id"], b["id"]: a["id"]}

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { RefreshCw, Pencil, Sparkles, Trash2, Search, ChevronUp, ChevronDown, FileCheck, Wand2, Play, Music, X, Undo2, Download, Tags } from '@lucide/svelte';
 	import { get, post, qs } from '#lib/api.ts';
-	import { bytes, duration, shouldBe } from '#lib/format.ts';
+	import { bytes, duration, conflictText, shouldBe } from '#lib/format.ts';
 	import { pick } from '#lib/select.ts';
 	import { errorToast, on, player, toast } from '#lib/state.svelte.ts';
 	import BulkEditor from '#lib/components/BulkEditor.svelte';
@@ -14,7 +14,7 @@
 	const PAGE = 100;
 	const MISSING = [['cover', 'Cover'], ['artist', 'Artist'], ['title', 'Title'], ['album', 'Album'], ['year', 'Year'], ['genre', 'Genre'], ['lyrics', 'Lyrics']];
 	const COLS = [['title', 'Title'], ['artist', 'Artists'], ['album', 'Album'], ['path', 'Path'], ['year', 'Year'], ['genre', 'Genre'], ['format', 'Format'], ['bitrate', 'kbit/s'], ['duration', 'Length'], ['size', 'Size'], ['profile_id', 'Profile'], ['added_at', 'Added']];
-	const ISSUES = [['name', 'Name'], ['location', 'Location'], ['tags', 'Tags'], ['cover', 'Cover'], ['profile', 'No profile'], ['broken', 'Broken']];
+	const ISSUES = [['name', 'Name'], ['taken', 'Name taken'], ['location', 'Location'], ['tags', 'Tags'], ['cover', 'Cover'], ['profile', 'No profile'], ['broken', 'Broken']];
 
 	let tab = $state('files');
 	let items = $state<any[]>([]);
@@ -234,10 +234,11 @@
 	const issueText = (i: string) => ISSUES.find(([k]) => k === i)?.[1] ?? i;
 	const issueList = (f: any) => {
 		const missingTags = f.issues.filter((i: string) => i.startsWith('tag:')).map((i: string) => i.slice(4));
-		return [...f.issues.filter((i: string) => !i.startsWith('tag:')), ...(missingTags.length ? ['tags'] : [])].map((i: string) => ({
+		const taken = f.issues.includes('taken'); // says more than Name, one pill is enough
+		return [...f.issues.filter((i: string) => !i.startsWith('tag:') && !(taken && i === 'name')), ...(missingTags.length ? ['tags'] : [])].map((i: string) => ({
 			key: i,
 			text: issueText(i),
-			hint: i === 'tags' ? `Missing: ${missingTags.join(', ')}` : i === 'name' || i === 'location' ? `Should be ${f.target_path}` : i === 'cover' ? 'No cover' : i === 'profile' ? 'Its profile was deleted' : f.error
+			hint: i === 'taken' ? `A rename can't fix this. ${f.target_path} collides with ${conflictText(f.conflict)}` : i === 'tags' ? `Missing: ${missingTags.join(', ')}` : i === 'name' || i === 'location' ? `Should be ${f.target_path}` : i === 'cover' ? 'No cover' : i === 'profile' ? 'Its profile was deleted' : f.error
 		}));
 	};
 	const cell = (f: any, k: string) => {
@@ -402,10 +403,11 @@
 									{#if k === 'title'}
 										<button class="link ellipsis" onclick={() => (editing = f.id)} title={f.path}>{f.title || f.path.split('/').pop()}</button>
 										{#if f.deleted_at}<span class="pill err" title="Deleted on {new Date(f.deleted_at * 1000).toLocaleDateString()}: {f.path}">Deleted</span>{/if}
-										{#each issueList(f) as i (i.key)}<span class="pill {i.key === 'broken' ? 'err' : 'warn'}" title={i.hint}>{i.text}</span>{/each}
+										{#each issueList(f) as i (i.key)}<span class="pill {i.key === 'broken' || i.key === 'taken' ? 'err' : 'warn'}" title={i.hint}>{i.text}</span>{/each}
 									{:else}
 										<span class="ellipsis" title={k === 'path' ? `${f.location_name}: ${f.path}` : undefined}>{cell(f, k) ?? ''}</span>
 										{#if k === 'path' && shouldBe(f)}<span class="ellipsis to" title="Should be {shouldBe(f)}">→ {shouldBe(f)}</span>{/if}
+										{#if k === 'path' && f.conflict}<button class="link ellipsis clash" onclick={() => (editing = f.conflict.id)} title="Open {f.conflict.location}: {f.conflict.path}">Collides with {conflictText(f.conflict)}</button>{/if}
 									{/if}
 								</td>
 							{/each}
@@ -576,6 +578,11 @@
 	}
 	.to {
 		color: var(--warn);
+	}
+	.clash {
+		display: block;
+		max-width: 100%;
+		color: var(--err);
 	}
 	.nowrap {
 		white-space: nowrap;

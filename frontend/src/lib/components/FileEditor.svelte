@@ -2,7 +2,7 @@
 	import { tick } from 'svelte';
 	import { Play, Sparkles, Trash2, Upload } from '@lucide/svelte';
 	import { get, post } from '../api';
-	import { bytes, duration, shouldBe } from '../format';
+	import { bytes, conflictText, duration, shouldBe } from '../format';
 	import { errorToast, player, toast } from '../state.svelte';
 	import Modal from './Modal.svelte';
 	import TagForm from './TagForm.svelte';
@@ -129,6 +129,7 @@
 					<code class="small path">{file.path}</code>
 					<span class="small faint">{file.location_name} · {file.format?.toUpperCase()}{file.bitrate ? ` · ${file.bitrate} kbit/s` : ''} · {duration(file.duration)} · {bytes(file.size)}</span>
 					{#if shouldBe(file)}<span class="small warn">Should be: <code>{shouldBe(file)}</code></span>{/if}
+					{#if file.conflict}<span class="small err">Collides with: <button class="link" onclick={() => (id = file.conflict.id)}><code>{conflictText(file.conflict)}</code></button></span>{/if}
 					{#if file.error}<span class="small err">{file.error}</span>{/if}
 					<div class="row wrap">
 						<button class="sm" onclick={play}><Play size={13} /> Play</button>
