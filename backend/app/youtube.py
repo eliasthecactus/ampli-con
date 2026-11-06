@@ -164,6 +164,7 @@ def client(authenticated: bool | None = None):
 def reset_clients() -> None:
     with _lock:
         _clients.clear()
+    _home_cache.clear()  # the feed belongs to the account
 
 
 async def call(fn, authenticated: bool | None = None):
@@ -347,6 +348,71 @@ async def search(query: str, kind: str = "all", limit: int = 20) -> dict:
             out["top"] = {"type": "song" if t in ("song", "video") else "album" if t in ("album", "single", "ep") else t,
                           "item": item}
     return out
+
+
+HOME_SECTIONS = 12
+HOME_SECONDS = 30 * 60
+_home_cache: dict[bool, dict] = {}
+_home_lock = asyncio.Lock()
+
+
+def home_item(item: dict | None) -> dict | None:
+    """Rows of the home page mix everything, so each entry says what it is, like the top hit of a search."""
+    if not item:
+        return None
+    browse_id = item.get("browseId") or ""
+    if item.get("videoId"):
+        kind, summary = "song", song(item)
+    elif browse_id.startswith("MPRE"):
+        kind, summary = "album", album_summary(item)
+    elif browse_id.startswith("UC"):
+        kind, summary = "artist", artist_summary(item)
+    elif item.get("playlistId") or browse_id.startswith("VL"):
+        kind, summary = "playlist", playlist_summary(item)
+    else:  # podcasts and whatever YouTube adds next: there's no page for them here
+        return None
+    return {"type": kind, "item": summary} if summary else None
+
+
+def _home_sections(raw: list[dict]) -> list[dict]:
+    sections = []
+    for s in raw:
+        items = [i for i in map(home_item, s.get("contents") or []) if i]
+        if items:
+            sections.append({"title": s.get("title") or "", "items": items})
+    return sections
+
+
+async def home(refresh: bool = False) -> dict:
+    """YouTube Music's home page: the account's recommendations, or what's popular in general without an account.
+
+    An old copy is better than nothing, and without one a broken sign-in still gets the general page."""
+    a = account()
+    signed_in = bool(a) and a["status"] != "expired"
+
+    def fresh() -> dict | None:
+        c = _home_cache.get(signed_in)
+        return c if c and not refresh and time.time() - c["fetched_at"] < HOME_SECONDS else None
+
+    if found := fresh():
+        return found
+    async with _home_lock:
+        if found := fresh():  # another request got it while this one waited
+            return found
+        for use_account in ([True, False] if signed_in else [False]):
+            try:
+                raw = await call(lambda yt: yt.get_home(limit=HOME_SECTIONS), authenticated=use_account)
+                break
+            except YouTubeError as e:
+                log.warning("home page%s: %s", " with the account" if use_account else "", e)
+                failed = e
+        else:
+            if old := _home_cache.get(signed_in):
+                return old
+            raise failed
+        out = {"personalized": use_account, "fetched_at": time.time(), "sections": _home_sections(raw)}
+        _home_cache[signed_in] = out
+        return out
 
 
 _album_cache: dict[str, tuple[float, dict]] = {}

@@ -4,10 +4,11 @@
 	import { player } from '../state.svelte';
 	import DownloadButton from './DownloadButton.svelte';
 
-	let { songs, numbered = false }: { songs: any[]; numbered?: boolean } = $props();
+	// rows: a block of that many rows that scrolls sideways, instead of one long list.
+	let { songs, numbered = false, rows = 0 }: { songs: any[]; numbered?: boolean; rows?: number } = $props();
 </script>
 
-<div class="list">
+<div class="list" class:block={rows} style={rows ? `--rows: ${Math.min(rows, songs.length)}` : undefined}>
 	{#each songs as s, i (s.id + ':' + i)}
 		<div class="song" class:gone={!s.available}>
 			<button class="ghost icon play" onclick={() => (player.song = { id: s.id, title: s.title, artist: s.artist, thumbnail: s.thumbnail })} disabled={!s.available} aria-label="Play {s.title}">
@@ -20,7 +21,7 @@
 					{#if s.artist_id}<a href="/artist/{s.artist_id}">{s.artist}</a>{:else}{s.artist}{/if}{#if s.album && !numbered}{' · '}{#if s.album_id}<a href="/album/{s.album_id}">{s.album}</a>{:else}{s.album}{/if}{/if}
 				</span>
 			</div>
-			<span class="small faint dur">{duration(s.duration)}</span>
+			{#if s.duration}<span class="small faint dur">{duration(s.duration)}</span>{/if}
 			{#if s.available}<DownloadButton kind="song" id={s.id} title={s.title} subtitle={s.artist} thumbnail={s.thumbnail} label="" small />{/if}
 		</div>
 	{/each}
@@ -31,8 +32,17 @@
 		display: flex;
 		flex-direction: column;
 	}
+	.block {
+		display: grid;
+		grid-template-rows: repeat(var(--rows), auto);
+		grid-auto-flow: column;
+		grid-auto-columns: minmax(280px, 1fr);
+		column-gap: 8px;
+		overflow-x: auto;
+	}
 	.song {
 		display: flex;
+		min-width: 0;
 		align-items: center;
 		gap: 12px;
 		padding: 6px 4px;

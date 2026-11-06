@@ -84,6 +84,7 @@ class FakeYT:
         self.playlists = {"PLmine": {"title": "Mine", "owned": True,
                                      "tracks": [track("aaaaaaaaaaa", "First", set_id="S1"), track("bbbbbbbbbbb", "Second", set_id="S2")]}}
         self.calls = []
+        self.home_error = None
 
     def search(self, q, filter=None, limit=20):
         return [
@@ -92,6 +93,22 @@ class FakeYT:
              "year": "2020", "type": "Album", "thumbnails": [{"url": "https://lh3.googleusercontent.com/x=w120-h120-l90-rj", "width": 120}]},
             {"resultType": "playlist", "browseId": "VLPLpublic", "title": "Public", "author": "Someone", "itemCount": "3 songs"},
             {"resultType": "artist", "browseId": "UCartist", "artist": "Artist"},
+        ]
+
+    def get_home(self, limit=3):
+        self.calls.append(("get_home", limit))
+        if self.home_error:
+            raise Exception(self.home_error)
+        return [
+            {"title": "Quick picks", "contents": [track("hhhhhhhhh01", "Pick", album="Album", album_id="MPREalbum"), None]},
+            {"title": "Listen again", "contents": [
+                track("hhhhhhhhh02", "Again"),
+                {"title": "Album", "browseId": "MPREalbum", "type": "Single", "audioPlaylistId": "OLAKalbum",
+                 "artists": [{"name": "Artist", "id": "UCartist"}]},
+                {"title": "Mix", "playlistId": "RDCLAKmix", "description": "Songs", "count": "20 songs", "author": "YouTube Music"},
+                {"title": "Artist", "browseId": "UCartist", "subscribers": "1M"},
+            ]},
+            {"title": "Podcasts only", "contents": [{"title": "Show", "browseId": "MPSPPshow"}]},
         ]
 
     def get_album(self, browse_id):

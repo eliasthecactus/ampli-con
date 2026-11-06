@@ -71,6 +71,16 @@ async def search(q: str, type: str = "all", limit: int = 20, who: dict = Depends
         raise _yt(e) from e
 
 
+@router.get("/home")
+async def home(refresh: bool = False, who: dict = Depends(auth.require_client)):
+    """Sections of {title, items: [{type: song|album|playlist|artist, item}]}, items shaped like in a search. Songs have
+    no length here (0). personalized says if they come from the account; refresh skips the half hour cache."""
+    try:
+        return await youtube.home(refresh)
+    except youtube.YouTubeError as e:
+        raise _yt(e) from e
+
+
 @router.get("/albums/{browse_id}")
 async def album(browse_id: str, who: dict = Depends(auth.require_client)):
     try:

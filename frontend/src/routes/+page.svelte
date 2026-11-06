@@ -5,7 +5,8 @@
 	import { get, qs } from '#lib/api.ts';
 	import { errorToast } from '#lib/state.svelte.ts';
 	import SongList from '#lib/components/SongList.svelte';
-	import DownloadButton from '#lib/components/DownloadButton.svelte';
+	import ForYou from '#lib/components/ForYou.svelte';
+	import MediaTile from '#lib/components/MediaTile.svelte';
 
 	let q = $state(page.url.searchParams.get('q') ?? '');
 	let results = $state<any>(null);
@@ -52,48 +53,21 @@
 	{/if}
 	{#if results.albums.length}
 		<h2 class="section-title">Albums</h2>
-		<div class="tiles">
-			{#each results.albums as a (a.id)}
-				<div class="tile">
-					<a href="/album/{a.id}"><img src={a.thumbnail} alt="" loading="lazy" /></a>
-					<a href="/album/{a.id}" class="ellipsis"><b>{a.title}</b></a>
-					<span class="small muted ellipsis">{a.type} · {a.artist}{a.year ? ` · ${a.year}` : ''}</span>
-					<DownloadButton kind="album" id={a.id} title={a.title} subtitle={a.artist} thumbnail={a.thumbnail} label="Album" small />
-				</div>
-			{/each}
-		</div>
+		<div class="tiles">{#each results.albums as a (a.id)}<MediaTile type="album" item={a} />{/each}</div>
 	{/if}
 	{#if results.playlists.length}
 		<h2 class="section-title">Playlists</h2>
-		<div class="tiles">
-			{#each results.playlists as p (p.id)}
-				<div class="tile">
-					<a href="/playlist/{p.id}">{#if p.thumbnail}<img src={p.thumbnail} alt="" loading="lazy" />{:else}<div class="ph"></div>{/if}</a>
-					<a href="/playlist/{p.id}" class="ellipsis"><b>{p.title}</b></a>
-					<span class="small muted ellipsis">{p.author ?? ''}{p.track_count ? ` · ${p.track_count} songs` : ''}</span>
-				</div>
-			{/each}
-		</div>
+		<div class="tiles">{#each results.playlists as p (p.id)}<MediaTile type="playlist" item={p} />{/each}</div>
 	{/if}
 	{#if results.artists.length}
 		<h2 class="section-title">Artists</h2>
-		<div class="tiles">
-			{#each results.artists as a (a.id)}
-				<a class="tile artist" href="/artist/{a.id}">
-					{#if a.thumbnail}<img src={a.thumbnail} alt="" loading="lazy" />{:else}<div class="ph"></div>{/if}
-					<b class="ellipsis">{a.name}</b>
-				</a>
-			{/each}
-		</div>
+		<div class="tiles">{#each results.artists as a (a.id)}<MediaTile type="artist" item={a} />{/each}</div>
 	{/if}
 	{#if !results.songs.length && !results.albums.length && !results.playlists.length && !results.artists.length}
 		<div class="empty">Nothing found.</div>
 	{/if}
 {:else if !busy}
-	<div class="empty">
-		Search YouTube Music, play right here, and download songs, albums or playlists with one of your profiles. The
-		Ampli app does the same from your phone.
-	</div>
+	<ForYou />
 {/if}
 
 <style>
@@ -126,27 +100,5 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
 		gap: 16px;
-	}
-	.tile {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		min-width: 0;
-	}
-	.tile img,
-	.ph {
-		width: 100%;
-		aspect-ratio: 1;
-		object-fit: cover;
-		border-radius: 10px;
-		background: var(--bg-3);
-	}
-	.artist img,
-	.artist .ph {
-		border-radius: 50%;
-	}
-	.tile :global(.dl) {
-		margin-top: 4px;
-		align-self: flex-start;
 	}
 </style>

@@ -14,6 +14,8 @@ download locations, download profiles and a live view of the queue.
 - **Search and play.** Songs, albums, playlists and artists from YouTube Music, in the app and in the web
   interface. Amplicon resolves the audio with yt-dlp and passes it through to the player, with seeking and an
   on-disk cache, so a song played twice comes from the disk.
+- **For you.** The Search page opens with the sections of the YouTube Music home page: your recommendations with a
+  connected account, what's popular without one.
 - **Download.** One song, a whole album or a whole playlist, with live progress in the app and in the web
   interface. Files get proper tags (title, artists, album, album artist, numbers, year, genre, label, ISRC), a square
   cover and, if you want, lyrics.
@@ -93,7 +95,7 @@ There is one user. It is used for the web interface and for signing in from Ampl
 ### YouTube sign-in
 
 Search, albums, public playlists, playing and downloading work without an account. With one, Amplicon can
-also use your own playlists and play songs that need a sign-in.
+also use your own playlists, show your recommendations and play songs that need a sign-in.
 
 Google doesn't let self-hosted apps sign in with a password, so Amplicon uses your browser's sign-in cookies.
 The web interface walks you through it (YouTube page): sign in to music.youtube.com in a private window, export
