@@ -24,6 +24,7 @@
 	load();
 
 	const onlySongs = (s: any) => s.items.every((i: any) => i.type === 'song');
+	const songsOf = (s: any) => s.items.filter((i: any) => i.type === 'song').map((i: any) => i.item);
 </script>
 
 {#if feed?.sections.length}
@@ -42,7 +43,7 @@
 				<div class="card pad"><SongList songs={s.items.map((x: any) => x.item)} rows={4} /></div>
 			{:else}
 				<div class="shelf">
-					{#each s.items as x, n (n)}<MediaTile type={x.type} item={x.item} />{/each}
+					{#each s.items as x, n (n)}<MediaTile type={x.type} item={x.item} queue={songsOf(s)} />{/each}
 				</div>
 			{/if}
 		</section>

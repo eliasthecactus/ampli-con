@@ -3,7 +3,8 @@
 	import { get, post, qs } from '#lib/api.ts';
 	import { bytes, duration, conflictText, shouldBe } from '#lib/format.ts';
 	import { pick } from '#lib/select.ts';
-	import { errorToast, on, player, toast } from '#lib/state.svelte.ts';
+	import { errorToast, on, toast } from '#lib/state.svelte.ts';
+	import { fileTrack, player } from '#lib/player.svelte.ts';
 	import BulkEditor from '#lib/components/BulkEditor.svelte';
 	import Duplicates from '#lib/components/Duplicates.svelte';
 	import FileEditor from '#lib/components/FileEditor.svelte';
@@ -215,7 +216,8 @@
 		}
 	}
 	function play(f: any) {
-		player.song = { id: String(f.id), title: f.title ?? f.path, artist: f.artist ?? '', thumbnail: f.has_cover ? `/api/files/${f.id}/cover?size=96` : null, src: `/api/files/${f.id}/audio` };
+		const list = items.filter((x) => !x.deleted_at);
+		player.play(list.map(fileTrack), list.indexOf(f));
 	}
 	$effect(() => on('library', (s) => {
 		const finished = scan.running && !s.running;

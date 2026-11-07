@@ -117,12 +117,6 @@ export function disconnectEvents() {
 	live.connected = false;
 }
 
-/** The web player: one song at a time through Amplicon's stream proxy. */
-export const player = $state({
-	song: null as null | { id: string; title: string; artist: string; thumbnail: string | null; src?: string },
-	playing: false
-});
-
 /** The review before a download: the job shown right now, and the ones this browser started and waits for. */
 export const reviews = $state({ job: null as number | null, waiting: [] as number[] });
 export function reviewWhenReady(id: number) {

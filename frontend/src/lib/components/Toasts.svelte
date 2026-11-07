@@ -1,8 +1,9 @@
 <script lang="ts">
+	import { player } from '../player.svelte';
 	import { toasts } from '../state.svelte';
 </script>
 
-<div class="toasts">
+<div class="toasts" class:above-player={player.song}>
 	{#each toasts.list as t (t.id)}
 		<div class="toast {t.kind}">{t.text}</div>
 	{/each}
@@ -18,6 +19,14 @@
 		gap: 8px;
 		z-index: 100;
 		max-width: min(420px, calc(100vw - 32px));
+	}
+	.above-player {
+		bottom: 100px;
+	}
+	@media (max-width: 860px) {
+		.above-player {
+			bottom: 88px;
+		}
 	}
 	.toast {
 		padding: 10px 14px;

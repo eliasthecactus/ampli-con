@@ -14,6 +14,9 @@ download locations, download profiles and a live view of the queue.
 - **Search and play.** Songs, albums, playlists and artists from YouTube Music, in the app and in the web
   interface. Amplicon resolves the audio with yt-dlp and passes it through to the player, with seeking and an
   on-disk cache, so a song played twice comes from the disk.
+- **A real player in the web interface.** A queue that follows the list you started from, shuffle, repeat,
+  volume and seeking, songs added by hand, media keys and the lock screen. Shortcuts: space to pause, arrows to
+  seek, shift and arrows to skip, M to mute.
 - **For you.** The Search page opens with the sections of the YouTube Music home page: your recommendations with a
   connected account, what's popular without one.
 - **Download.** One song, a whole album or a whole playlist, with live progress in the app and in the web

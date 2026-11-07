@@ -3,7 +3,8 @@
 	import { Play, Sparkles, Trash2, Upload } from '@lucide/svelte';
 	import { get, post } from '../api';
 	import { bytes, conflictText, duration, shouldBe } from '../format';
-	import { errorToast, player, toast } from '../state.svelte';
+	import { errorToast, toast } from '../state.svelte';
+	import { fileTrack, player } from '../player.svelte';
 	import Modal from './Modal.svelte';
 	import TagForm from './TagForm.svelte';
 	import Candidates from './Candidates.svelte';
@@ -112,7 +113,7 @@
 		}
 	}
 	function play() {
-		player.song = { id: String(file.id), title: tags.title || file.path, artist: tags.artist, thumbnail: file.has_cover ? `/api/files/${file.id}/cover?size=96` : null, src: `/api/files/${file.id}/audio` };
+		player.play([fileTrack({ ...file, title: tags.title, artist: tags.artist })]);
 	}
 	const shown = $derived(removeCover ? null : (cover?.data ?? cover?.url ?? (file?.has_cover ? `/api/files/${file.id}/cover?size=320&t=${stamp}` : null)));
 </script>

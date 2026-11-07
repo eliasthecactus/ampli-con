@@ -3,7 +3,8 @@
 	import { get, post, qs } from '../api';
 	import { bytes } from '../format';
 	import { pick } from '../select';
-	import { errorToast, player, toast } from '../state.svelte';
+	import { errorToast, toast } from '../state.svelte';
+	import { fileTrack, player } from '../player.svelte';
 
 	let { changed, imported }: { changed: () => void; imported: () => void } = $props();
 
@@ -106,8 +107,9 @@
 		const r = await post('/files/restore', body());
 		toast(`${r.restored} ${r.restored === 1 ? 'file is' : 'files are'} back in the list`, 'ok');
 	});
-	function play(f: any) {
-		player.song = { id: String(f.id), title: f.title ?? f.path, artist: f.artist ?? '', thumbnail: null, src: `/api/files/${f.id}/audio` };
+	function play(f: any, folder: any[]) {
+		const list = folder.filter((x) => !x.error || x === f);
+		player.play(list.map((x) => fileTrack({ ...x, has_cover: false })), list.indexOf(f));
 	}
 </script>
 
@@ -163,7 +165,7 @@
 					{#each open[key(f)] as x (x.id)}
 						<div class="file small">
 							{#if !picked.has(key(f))}<input type="checkbox" checked={pickedFiles.has(x.id)} onclick={(e) => toggleFile(x.id, open[key(f)], e)} aria-label="Select {x.path}" />{/if}
-							<button class="ghost sm icon" onclick={() => play(x)} aria-label="Play {x.path}"><Play size={13} /></button>
+							<button class="ghost sm icon" onclick={() => play(x, open[key(f)])} aria-label="Play {x.path}"><Play size={13} /></button>
 							<span class="grow ellipsis" title={x.path}>{x.path.split('/').pop()}</span>
 							{#if x.title}<span class="faint ellipsis tagged">{[x.artist, x.title].filter(Boolean).join(' – ')}</span>{:else}<span class="faint">no tags</span>{/if}
 							{#if x.error}<span class="pill err" title={x.error}>Broken</span>{/if}

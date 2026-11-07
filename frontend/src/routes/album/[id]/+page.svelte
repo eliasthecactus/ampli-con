@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { Play, Shuffle } from '@lucide/svelte';
 	import { get } from '#lib/api.ts';
 	import { duration } from '#lib/format.ts';
 	import { errorToast } from '#lib/state.svelte.ts';
+	import { player } from '#lib/player.svelte.ts';
 	import SongList from '#lib/components/SongList.svelte';
 	import DownloadButton from '#lib/components/DownloadButton.svelte';
 
@@ -21,7 +23,11 @@
 			<span class="small faint">{album.type}</span>
 			<h1>{album.title}</h1>
 			<span class="muted">{#if album.artist_id}<a href="/artist/{album.artist_id}">{album.artist}</a>{:else}{album.artist}{/if}{album.year ? ` · ${album.year}` : ''} · {album.track_count} songs · {duration(album.duration)}</span>
-			<div class="row"><DownloadButton kind="album" id={album.id} title={album.title} subtitle={album.artist} thumbnail={album.thumbnail} label="Download album" /></div>
+			<div class="row">
+				<button class="primary" onclick={() => player.playSongs(album.tracks)}><Play size={15} /> Play</button>
+				<button onclick={() => player.shuffleSongs(album.tracks)}><Shuffle size={15} /> Shuffle</button>
+				<DownloadButton kind="album" id={album.id} title={album.title} subtitle={album.artist} thumbnail={album.thumbnail} label="Download album" />
+			</div>
 		</div>
 	</div>
 	<div class="card pad"><SongList songs={album.tracks} numbered /></div>

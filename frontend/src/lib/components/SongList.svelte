@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { Play } from '@lucide/svelte';
+	import { ListPlus, Play } from '@lucide/svelte';
 	import { duration } from '../format';
-	import { player } from '../state.svelte';
+	import { player } from '../player.svelte';
 	import DownloadButton from './DownloadButton.svelte';
 
 	// rows: a block of that many rows that scrolls sideways, instead of one long list.
@@ -11,7 +11,7 @@
 <div class="list" class:block={rows} style={rows ? `--rows: ${Math.min(rows, songs.length)}` : undefined}>
 	{#each songs as s, i (s.id + ':' + i)}
 		<div class="song" class:gone={!s.available}>
-			<button class="ghost icon play" onclick={() => (player.song = { id: s.id, title: s.title, artist: s.artist, thumbnail: s.thumbnail })} disabled={!s.available} aria-label="Play {s.title}">
+			<button class="ghost icon play" onclick={() => player.playSongs(songs, s)} disabled={!s.available} aria-label="Play {s.title}">
 				{#if numbered}<span class="n">{s.track ?? i + 1}</span>{:else if s.thumbnail}<img src={s.thumbnail} alt="" loading="lazy" />{/if}
 				<span class="overlay"><Play size={15} /></span>
 			</button>
@@ -22,6 +22,7 @@
 				</span>
 			</div>
 			{#if s.duration}<span class="small faint dur">{duration(s.duration)}</span>{/if}
+			{#if s.available}<button class="ghost icon sm add" onclick={() => player.addSong(s)} title="Add to queue" aria-label="Add {s.title} to the queue"><ListPlus size={15} /></button>{/if}
 			{#if s.available}<DownloadButton kind="song" id={s.id} title={s.title} subtitle={s.artist} thumbnail={s.thumbnail} label="" small />{/if}
 		</div>
 	{/each}
@@ -87,6 +88,19 @@
 	}
 	.dur {
 		font-variant-numeric: tabular-nums;
+	}
+	.add {
+		flex-shrink: 0;
+		opacity: 0;
+	}
+	.song:hover .add,
+	.add:focus-visible {
+		opacity: 1;
+	}
+	@media (hover: none) {
+		.add {
+			opacity: 1;
+		}
 	}
 	a:hover {
 		text-decoration: underline;

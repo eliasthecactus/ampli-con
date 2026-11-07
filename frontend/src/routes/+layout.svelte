@@ -2,16 +2,17 @@
 	import '../app.css';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { Search, Download, Library, SlidersHorizontal, HardDrive, CirclePlay, Settings, LogOut, Menu, Sun, Moon, Monitor, Play, Pause, X } from '@lucide/svelte';
+	import { Search, Download, Library, SlidersHorizontal, HardDrive, CirclePlay, Settings, LogOut, Menu, Sun, Moon, Monitor } from '@lucide/svelte';
 	import { get, post, setUnauthorizedHandler } from '#lib/api.ts';
-	import { session, live, player, connectEvents, disconnectEvents } from '#lib/state.svelte.ts';
+	import { session, live, connectEvents, disconnectEvents } from '#lib/state.svelte.ts';
+	import { player } from '#lib/player.svelte.ts';
 	import Toasts from '#lib/components/Toasts.svelte';
 	import MetadataReview from '#lib/components/MetadataReview.svelte';
+	import Player from '#lib/components/Player.svelte';
 
 	let { children } = $props();
 	let navOpen = $state(false);
 	let theme = $state<'system' | 'light' | 'dark'>('system');
-	let audio: HTMLAudioElement | undefined = $state();
 
 	const NAV = [
 		{ href: '/', label: 'Search', icon: Search },
@@ -24,6 +25,7 @@
 	];
 
 	setUnauthorizedHandler(() => {
+		player.close();
 		session.user = null;
 		disconnectEvents();
 	});
@@ -70,17 +72,11 @@
 
 	async function logout() {
 		await post('/auth/logout').catch(() => {});
+		player.close();
 		session.user = null;
 		disconnectEvents();
 		goto('/login');
 	}
-
-	$effect(() => {
-		if (player.song && audio) {
-			audio.src = player.song.src ?? `/api/stream/${player.song.id}`;
-			audio.play().catch(() => {});
-		}
-	});
 
 	const activeCount = $derived(Object.keys(live.jobs).length);
 	function active(href: string) {
@@ -135,20 +131,7 @@
 		</main>
 	</div>
 	<MetadataReview />
-	{#if player.song}
-		<div class="playerbar">
-			{#if player.song.thumbnail}<img src={player.song.thumbnail} alt="" />{/if}
-			<div class="grow col ellipsis">
-				<b class="ellipsis">{player.song.title}</b>
-				<span class="small muted ellipsis">{player.song.artist}</span>
-			</div>
-			<button class="icon" onclick={() => (audio?.paused ? audio?.play() : audio?.pause())} aria-label={player.playing ? 'Pause' : 'Play'}>
-				{#if player.playing}<Pause size={17} />{:else}<Play size={17} />{/if}
-			</button>
-			<button class="ghost icon" onclick={() => { audio?.pause(); player.song = null; }} aria-label="Close player"><X size={17} /></button>
-		</div>
-	{/if}
-	<audio bind:this={audio} onplay={() => (player.playing = true)} onpause={() => (player.playing = false)} onended={() => (player.playing = false)}></audio>
+	<Player />
 {/if}
 <Toasts />
 
@@ -239,7 +222,7 @@
 		min-width: 0;
 	}
 	main.with-player {
-		padding-bottom: 72px;
+		padding-bottom: 96px;
 	}
 	.content {
 		max-width: 1180px;
@@ -249,28 +232,6 @@
 	.mobilebar,
 	.scrim {
 		display: none;
-	}
-	.playerbar {
-		position: fixed;
-		left: 50%;
-		transform: translateX(-50%);
-		bottom: 12px;
-		width: min(560px, calc(100vw - 32px));
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 8px 10px;
-		background: var(--bg-2);
-		border: 1px solid var(--line);
-		border-radius: 14px;
-		box-shadow: var(--shadow-lg);
-		z-index: 45;
-	}
-	.playerbar img {
-		width: 42px;
-		height: 42px;
-		border-radius: 7px;
-		object-fit: cover;
 	}
 	@media (max-width: 860px) {
 		aside {

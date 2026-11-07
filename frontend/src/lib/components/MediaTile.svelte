@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { Play } from '@lucide/svelte';
-	import { player } from '../state.svelte';
+	import { player } from '../player.svelte';
 	import DownloadButton from './DownloadButton.svelte';
 
-	let { type, item }: { type: string; item: any } = $props();
+	// queue: the songs around this one, which play on after it.
+	let { type, item, queue }: { type: string; item: any; queue?: any[] } = $props();
 	const href = $derived(type === 'song' ? null : `/${type}/${item.id}`);
 </script>
 
@@ -14,7 +15,7 @@
 	</a>
 {:else if type === 'song'}
 	<div class="tile">
-		<button class="cover" onclick={() => (player.song = { id: item.id, title: item.title, artist: item.artist, thumbnail: item.thumbnail })} aria-label="Play {item.title}">
+		<button class="cover" onclick={() => player.playSongs(queue ?? [item], item)} aria-label="Play {item.title}">
 			{#if item.thumbnail}<img src={item.thumbnail} alt="" loading="lazy" />{:else}<div class="ph"></div>{/if}
 			<span class="overlay"><Play size={22} /></span>
 		</button>
