@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import re
+import struct
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -56,8 +57,100 @@ def cached_file(video_id: str) -> Path | None:
             os.utime(p)  # least recently used goes first when the cache is full
         except OSError:
             pass
+        if video_id not in _checked:
+            _checked.add(video_id)
+            _fix_file(p)  # cached before the header fix
         return p
     return None
+
+
+# ---------------------------------------------------------------- header fix
+#
+# YouTube's audio is fragmented MP4 (DASH). Its track header (mdhd) still states the whole length, and
+# AVFoundation adds that to the length of the fragments, so the app showed every song at twice its length
+# and played silence for the second half. A fragmented file's mdhd should say 0 (yt-dlp remuxes it for
+# downloads), so the proxy zeroes that field on the way through. The size stays the same, so ranges match.
+
+HEADER_BYTES = 64 * 1024
+_patches: dict[tuple[str, int], list[tuple[int, int]]] = {}
+_checked: set[str] = set()
+
+
+def _boxes(buf: bytes, start: int, end: int):
+    pos = start
+    while pos + 8 <= end:
+        size, kind = struct.unpack(">I4s", buf[pos:pos + 8])
+        head = 8
+        if size == 1:
+            if pos + 16 > end:
+                return
+            size, head = struct.unpack(">Q", buf[pos + 8:pos + 16])[0], 16
+        elif size == 0:
+            size = end - pos
+        if size < head or pos + size > end:
+            return
+        yield kind, pos, pos + head, pos + size
+        pos += size
+
+
+def header_patches(buf: bytes) -> list[tuple[int, int]]:
+    """Where the mdhd durations of a fragmented MP4 sit, as (offset, length), when they aren't 0 already."""
+    for kind, _, body, end in _boxes(buf, 0, len(buf)):
+        if kind != b"moov":
+            continue
+        children = list(_boxes(buf, body, end))
+        if not any(k == b"mvex" for k, *_ in children):
+            return []  # not fragmented: the durations are right
+        out = []
+        for k, _, tbody, tend in children:
+            if k != b"trak":
+                continue
+            for k2, _, mbody, mend in _boxes(buf, tbody, tend):
+                if k2 != b"mdia":
+                    continue
+                for k3, _, hbody, hend in _boxes(buf, mbody, mend):
+                    if k3 != b"mdhd" or hend - hbody < 20:
+                        continue
+                    at, n = (hbody + 16, 4) if buf[hbody] == 0 else (hbody + 24, 8)
+                    if at + n <= hend and any(buf[at:at + n]):
+                        out.append((at, n))
+        return out
+    return []
+
+
+def apply_patches(chunk: bytes, pos: int, patches: list[tuple[int, int]]) -> bytes:
+    """Zeroes the patched ranges inside a chunk that starts at file offset pos."""
+    hits = [(a, n) for a, n in patches if a < pos + len(chunk) and a + n > pos]
+    if not hits:
+        return chunk
+    b = bytearray(chunk)
+    for a, n in hits:
+        lo, hi = max(a, pos) - pos, min(a + n, pos + len(chunk)) - pos
+        b[lo:hi] = bytes(hi - lo)
+    return bytes(b)
+
+
+def _fix_file(path: Path) -> None:
+    try:
+        with open(path, "r+b") as f:
+            for at, n in header_patches(f.read(HEADER_BYTES)):
+                f.seek(at)
+                f.write(bytes(n))
+    except OSError as e:
+        log.warning("couldn't fix the header of %s: %s", path.name, e)
+
+
+async def _header_patches(video_id: str, info: dict) -> list[tuple[int, int]]:
+    key = (video_id, info["size"])
+    if key not in _patches:
+        r = await _open(video_id, 0, min(HEADER_BYTES, info["size"]) - 1)
+        try:
+            if r.status_code >= 400:
+                return []  # the stream itself will report the error
+            _patches[key] = header_patches(await r.aread())
+        finally:
+            await r.aclose()
+    return _patches[key]
 
 
 def _expiry(url: str) -> float:
@@ -168,8 +261,9 @@ async def fill_cache(video_id: str) -> Path | None:
     try:
         info = await resolve(video_id)
         if playable_directly(info) and info.get("size"):
+            patches = await _header_patches(video_id, info)
             with open(part, "wb") as f:
-                async for chunk in _chunks(video_id, 0, info["size"] - 1):
+                async for chunk in _chunks(video_id, 0, info["size"] - 1, patches=patches):
                     f.write(chunk)
             if part.stat().st_size != info["size"]:
                 raise RuntimeError(f"got {part.stat().st_size} of {info['size']} bytes")
@@ -223,7 +317,8 @@ async def _open(video_id: str, start: int, end: int) -> httpx.Response:
         await resolve(video_id, fresh=True)
 
 
-async def _chunks(video_id: str, start: int, end: int, first: httpx.Response | None = None):
+async def _chunks(video_id: str, start: int, end: int, first: httpx.Response | None = None,
+                  patches: list[tuple[int, int]] = ()):
     pos = start
     while pos <= end:
         stop = min(pos + CHUNK - 1, end)
@@ -233,6 +328,8 @@ async def _chunks(video_id: str, start: int, end: int, first: httpx.Response | N
             if r.status_code >= 400:
                 raise RuntimeError(f"The source answered {r.status_code}")
             async for chunk in r.aiter_bytes(64 * 1024):
+                if patches:
+                    chunk = apply_patches(chunk, pos, patches)
                 pos += len(chunk)
                 yield chunk
         finally:
@@ -274,7 +371,12 @@ async def serve(video_id: str, request: Request) -> Response:
     size = info["size"]
     rng = _parse_range(request.headers.get("range"), size)
     start, end = rng or (0, size - 1)
-    first = await _open(video_id, start, min(start + CHUNK - 1, end))
+    # the field sits past the first 64 bytes (ftyp, moov, trak, mdia and mdhd headers come first)
+    if start < HEADER_BYTES and end >= 64 and request.method != "HEAD":
+        patches, first = await asyncio.gather(_header_patches(video_id, info),
+                                              _open(video_id, start, min(start + CHUNK - 1, end)))
+    else:
+        patches, first = [], await _open(video_id, start, min(start + CHUNK - 1, end))
     if first.status_code >= 400:
         await first.aclose()
         raise HTTPException(502, f"The source answered {first.status_code}")
@@ -284,5 +386,5 @@ async def serve(video_id: str, request: Request) -> Response:
     if request.method == "HEAD":
         await first.aclose()
         return Response(status_code=206 if rng else 200, media_type="audio/mp4", headers=headers)
-    return StreamingResponse(_chunks(video_id, start, end, first), status_code=206 if rng else 200,
+    return StreamingResponse(_chunks(video_id, start, end, first, patches), status_code=206 if rng else 200,
                              media_type="audio/mp4", headers=headers)

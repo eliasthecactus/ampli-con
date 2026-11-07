@@ -123,7 +123,8 @@ def test_fresh_links_are_retried_until_youtube_accepts_them(client, h, monkeypat
     monkeypatch.setattr(stream.asyncio, "sleep", no_sleep)
     stream._resolved.clear()
     r = client.get("/api/stream/yyyyyyyyyyy", headers=h)
-    assert r.status_code == 200 and r.content == audio and calls["n"] == 3
+    # two refused, then the header lookup (for the mdhd fix) and the audio itself
+    assert r.status_code == 200 and r.content == audio and calls["n"] == 4
 
 
 def test_stream_cache_fills_in_chunks(client, h, monkeypatch):
