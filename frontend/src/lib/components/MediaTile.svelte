@@ -60,10 +60,14 @@
 		position: relative;
 		display: block;
 		width: 100%;
+		height: auto;
 		padding: 0;
 		border: none;
 		background: none;
 		cursor: pointer;
+	}
+	.cover:hover:not(:disabled) {
+		background: none;
 	}
 	.overlay {
 		position: absolute;

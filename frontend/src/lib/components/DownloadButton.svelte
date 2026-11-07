@@ -18,6 +18,34 @@
 	let locations = $state<any[]>([]);
 	let busy = $state(false);
 	let sent = $state(false);
+	let box: HTMLDivElement;
+	// The menu is fixed to the viewport, so a scrolling shelf or card around the button can't cut it off.
+	let menuStyle = $state('');
+	let menu = $state<HTMLDivElement>();
+
+	$effect(() => {
+		if (!open) return;
+		const close = (e: Event) => {
+			if (!(e.target instanceof Node && menu?.contains(e.target))) open = false;
+		};
+		window.addEventListener('scroll', close, true);
+		window.addEventListener('resize', close);
+		return () => {
+			window.removeEventListener('scroll', close, true);
+			window.removeEventListener('resize', close);
+		};
+	});
+
+	function place() {
+		const r = box.getBoundingClientRect();
+		const width = 260;
+		const left = Math.max(8, r.left + width <= window.innerWidth - 8 ? r.left : r.right - width);
+		const below = window.innerHeight - r.bottom;
+		menuStyle =
+			below < 240 && r.top > below
+				? `left:${left}px;bottom:${window.innerHeight - r.top + 4}px;max-height:${r.top - 12}px`
+				: `left:${left}px;top:${r.bottom + 4}px;max-height:${below - 12}px`;
+	}
 
 	async function loadProfiles() {
 		if (!profiles.length) {
@@ -46,6 +74,7 @@
 	async function toggle() {
 		try {
 			await loadProfiles();
+			if (!open) place();
 			open = !open;
 		} catch (e) {
 			errorToast(e);
@@ -53,7 +82,7 @@
 	}
 </script>
 
-<div class="dl">
+<div class="dl" bind:this={box}>
 	<button class:sm={small} class:primary={!small} onclick={() => start()} disabled={busy} title="Download with the default profile">
 		{#if sent}<Check size={15} />{:else}<Download size={15} />{/if}
 		{#if label}<span>{label}</span>{/if}
@@ -62,7 +91,7 @@
 	{#if open}
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 		<div class="scrim" role="presentation" onclick={() => (open = false)}></div>
-		<div class="menu card">
+		<div class="menu card" style={menuStyle} bind:this={menu}>
 			<div class="small faint pad">Download with profile</div>
 			{#each profiles as p (p.id)}
 				<button class="ghost item" onclick={() => start(p.id)}>
@@ -108,11 +137,10 @@
 		z-index: 20;
 	}
 	.menu {
-		position: absolute;
-		right: 0;
-		top: calc(100% + 4px);
+		position: fixed;
 		z-index: 21;
-		min-width: 260px;
+		width: 260px;
+		overflow-y: auto;
 		padding: 4px;
 		box-shadow: var(--shadow-lg);
 	}
