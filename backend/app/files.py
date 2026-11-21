@@ -84,8 +84,8 @@ def scan_location(loc: dict) -> None:
                                            "WHERE location_id = ?", [loc["id"]])}
     seen: list[int] = []
     for folder, dirs, names in os.walk(root):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for name in names:
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in sorted(names):
             if name.startswith(".") or not name.lower().endswith(tags.SUPPORTED):
                 continue
             p = Path(folder) / name
