@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- frontend (SvelteKit static build)
-FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:26-alpine AS frontend
 WORKDIR /src
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -9,10 +9,10 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- deno: the JavaScript runtime yt-dlp needs for YouTube
-FROM denoland/deno:bin-2.9.7 AS deno
+FROM denoland/deno:bin-2.9.8 AS deno
 
 # ---- runtime
-FROM python:3.12-slim
+FROM python:3.15-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     CONFIG_DIR=/config \
